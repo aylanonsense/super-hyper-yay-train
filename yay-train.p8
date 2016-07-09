@@ -262,16 +262,64 @@ function update_entity(entity)
 		entity.action="standing"
 		entity.frames_in_action=0
 	end
+	-- move
+	if entity.is_grounded then
+		if entity.is_mobile_grounded and entity.grounded_move_frames_left>0 then
+			local col=entity.col
+			local row=entity.row
+			local dist=entity.grounded_move_pattern[entity.grounded_move_frames_left]
+			-- moving left
+			if entity.grounded_move_dir==1 then
+				entity.x-=dist
+				col-=1
+			-- moving right
+			elseif entity.grounded_move_dir==2 then
+				entity.x+=dist
+				col+=1
+			-- moving up
+			elseif entity.grounded_move_dir==3 then
+				entity.z+=dist
+				row+=1
+			-- moving down
+			elseif entity.grounded_move_dir==4 then
+				entity.z-=dist
+				row-=1
+			end
+			if entity.grounded_move_frames_left==entity.grounded_update_frame then
+				entity.col=col
+				entity.row=row
+			end
+			entity.grounded_move_frames_left-=1
+		end
+	elseif entity.is_mobile_airborne then
+		entity.x+=entity.airborne_vx
+		entity.y+=entity.airborne_vy
+		entity.z+=entity.airborne_vz
+	end
+	-- shoot projectiles
 	if entity.can_shoot then
 		if entity.frames_to_shot>0 then
 			entity.frames_to_shot-=1
 		end
 		if entity.action=="shooting" and entity.frames_in_action==entity.shoot_frame then
-			spawn_entity_at_pos("enemy_bullet",entity.x+20,entity.z,entity.facing_dir)
+			local bullet=spawn_entity_at_pos("enemy_bullet",entity.x+1,entity.z-1,entity.facing_dir)
+			-- moving left
+			if entity.facing_dir==1 then
+				bullet.airborne_vx=-2
+			-- moving right
+			elseif entity.facing_dir==2 then
+				bullet.airborne_vx=2
+			-- moving up
+			elseif entity.facing_dir==3 then
+				bullet.airborne_vz=2
+			-- moving down
+			elseif entity.facing_dir==4 then
+				bullet.airborne_vz=-2
+			end
 		end
 	end
 	-- entity-specific code
-	if entity.type=="turret" and entity.frames_to_shot<=0 then
+	if entity.type=="turret" and entity.frames_to_shot<=0 and game_frame%entity.frames_between_shots==0 then
 		shoot_entity(entity)
 	end
 end
@@ -285,32 +333,32 @@ function shoot_entity(entity)
 end
 
 -- function update_grid_entity(entity)
--- 	if entity.move_frames_left>0 then
+-- 	if entity.grounded_move_frames_left>0 then
 -- 		local col=entity.col
 -- 		local row=entity.row
--- 		local dist=entity.move_pattern[entity.move_frames_left]
+-- 		local dist=entity.move_pattern[entity.grounded_move_frames_left]
 -- 		-- moving left
--- 		if entity.move_dir==1 then
+-- 		if entity.grounded_move_dir==1 then
 -- 			entity.x-=dist
 -- 			col-=1
 -- 		-- moving right
--- 		elseif entity.move_dir==2 then
+-- 		elseif entity.grounded_move_dir==2 then
 -- 			entity.x+=dist
 -- 			col+=1
 -- 		-- moving up
--- 		elseif entity.move_dir==3 then
+-- 		elseif entity.grounded_move_dir==3 then
 -- 			entity.z+=dist
 -- 			row+=1
 -- 		-- moving down
--- 		elseif entity.move_dir==4 then
+-- 		elseif entity.grounded_move_dir==4 then
 -- 			entity.z-=dist
 -- 			row-=1
 -- 		end
--- 		if entity.move_frames_left==entity.tile_update_frame then
+-- 		if entity.grounded_move_frames_left==entity.grounded_update_frame then
 -- 			entity.col=col
 -- 			entity.row=row
 -- 		end
--- 		entity.move_frames_left-=1
+-- 		entity.grounded_move_frames_left-=1
 -- 	end
 -- 	-- the player can shoot bullets!
 -- 	if entity.type=="train_engine" then
@@ -332,25 +380,31 @@ function update_effect(effect)
 end
 
 -- function move_grid_entity(entity,dir)
--- 	entity.move_dir=dir
--- 	entity.move_frames_left=#entity.move_pattern
+-- 	entity.grounded_move_dir=dir
+-- 	entity.grounded_move_frames_left=#entity.move_pattern
 -- end
 
 -- function revise_grid_entity_move(entity,x,z,dir)
 -- 	entity.x=x
 -- 	entity.z=z
--- 	entity.move_dir=dir
--- 	local dist=entity.move_pattern[entity.move_frames_left+1]
--- 	if entity.move_dir==1 then
+-- 	entity.grounded_move_dir=dir
+-- 	local dist=entity.move_pattern[entity.grounded_move_frames_left+1]
+-- 	if entity.grounded_move_dir==1 then
 -- 		entity.x-=dist
--- 	elseif entity.move_dir==2 then
+-- 	elseif entity.grounded_move_dir==2 then
 -- 		entity.x+=dist
--- 	elseif entity.move_dir==3 then
+-- 	elseif entity.grounded_move_dir==3 then
 -- 		entity.z+=dist
--- 	elseif entity.move_dir==4 then
+-- 	elseif entity.grounded_move_dir==4 then
 -- 		entity.z-=dist
 -- 	end
 -- end
+
+function kill_if_out_of_bounds(entity)
+	if min_row!=nil and entity.z<=min_row*tile_size then
+		entity.is_alive=false
+	end
+end
 
 function _update()
 	-- sometimes we don't run the code
@@ -367,7 +421,7 @@ function _update()
 	-- 	curr_btns[i]=btn(i-1)
 	-- 	if curr_btns[i] and player_entity!=nil then
 	-- 		held_dir=i
-	-- 		if not prev_btns[i] and pressed_dir==0 and i!=player_entity.move_dir and i!=opposite_dirs[player_entity.move_dir] then
+	-- 		if not prev_btns[i] and pressed_dir==0 and i!=player_entity.grounded_move_dir and i!=opposite_dirs[player_entity.grounded_move_dir] then
 	-- 			pressed_dir=i
 	-- 		end
 	-- 	end
@@ -375,26 +429,26 @@ function _update()
 
 	-- whenever the player would stop moving, start moving agian
 	-- if player_entity!=nil then
-	-- 	if player_entity.move_frames_left<=0 then
-	-- 		prev_player_move_dir=player_entity.move_dir
+	-- 	if player_entity.grounded_move_frames_left<=0 then
+	-- 		prev_player_move_dir=player_entity.grounded_move_dir
 	-- 		if pressed_dir!=0 then
 	-- 			move_grid_entity(player_entity,pressed_dir)
 	-- 			pressed_dir=0
 	-- 			curr_move_is_press=true
 	-- 		else
-	-- 			move_grid_entity(player_entity,player_entity.move_dir)
+	-- 			move_grid_entity(player_entity,player_entity.grounded_move_dir)
 	-- 			curr_move_is_press=false
 	-- 		end
-	-- 		player_entity.facing_dir=player_entity.move_dir
+	-- 		player_entity.facing_dir=player_entity.grounded_move_dir
 	-- 		prev_player_x=player_entity.x
 	-- 		prev_player_z=player_entity.z
 
 	-- 	-- we allow the player to revise their movement, feels tighter
-	-- 	elseif player_entity.move_frames_left==#player_entity.move_pattern-1 and not curr_move_is_press and pressed_dir!=0 and pressed_dir!=prev_player_move_dir and pressed_dir!=opposite_dirs[prev_player_move_dir] then
+	-- 	elseif player_entity.grounded_move_frames_left==#player_entity.move_pattern-1 and not curr_move_is_press and pressed_dir!=0 and pressed_dir!=prev_player_move_dir and pressed_dir!=opposite_dirs[prev_player_move_dir] then
 	-- 		revise_grid_entity_move(player_entity,prev_player_x,prev_player_z,pressed_dir)
 	-- 		pressed_dir=0
 	-- 		curr_move_is_press=true
-	-- 		player_entity.facing_dir=player_entity.move_dir
+	-- 		player_entity.facing_dir=player_entity.grounded_move_dir
 	-- 	end
 	-- end
 
@@ -414,6 +468,9 @@ function _update()
 	-- add new entities to the game
 	add_all(entities,new_entities)
 	new_entities={}
+
+	-- kill entities out of bound
+	foreach(entities,kill_if_out_of_bounds)
 
 	-- cull dead entities/effects
 	entities=filter_list(entities,is_alive)
@@ -449,7 +506,7 @@ function draw_entity(entity)
 		if entity.facing_dir==1 then
 			flipped=true
 		end
-		spr(frame,x-1,y-2,1,1,flipped,false)
+		spr(frame,x+entity.width/2-4,y-2,1,1,flipped,false)
 	end
 	if draw_debug_shapes then
 		rect(x,y,x+entity.width-1,y+entity.depth-1,14)
@@ -580,17 +637,25 @@ entities_library={
 		["is_mobile_grounded"]=false,
 		["is_mobile_airborne"]=false,
 		["animation"]={
-			["standing"]={38,38,38,39,39,39},
-			["shooting"]={38,39,38,39,40,40,40,38},
+			["standing"]={
+				["front"]={22,22,22,23,23,23},
+				["back"]={38,38,38,39,39,39},
+				["sides"]={54,54,54,55,55,55}
+			},
+			["shooting"]={
+				["front"]={22,23,22,23,24,24,24,22},
+				["back"]={38,39,38,39,40,40,40,38},
+				["sides"]={54,55,54,55,56,56,56,54}
+			}
 		},
 		["can_shoot"]=true,
-		["frames_to_shot"]=40,
-		["frames_between_shots"]=300,
+		["frames_to_shot"]=60,
+		["frames_between_shots"]=60,
 		["shoot_frame"]=20
 	},
 	["enemy_bullet"]={
-		["width"]=6,
-		["depth"]=6,
+		["width"]=4,
+		["depth"]=4,
 		["is_mobile_grounded"]=false,
 		["is_mobile_airborne"]=true,
 		["animation"]={
@@ -678,30 +743,30 @@ __gfx__
 0000000058888999098998900888888058989800008888000888880000822800008888000000000000000000000cc00000077000000000000000000000000000
 0000000002222225025555200822228002222200002222000222220000222200008888000000000000000000000cc00000077000000000000000000000000000
 0000000002502505055555500520025002502500005225000250250000522500005225000000000000000000000cc00000077000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000000000000000000000000000000000000000000000000000000000000000088000000aa00000077000000cc00000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000088880000aaaa000077770000cccc0000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000088880000aaaa000077770000cccc0000000000000000000000000000000000
-000000000000000000000000000000000000000000000000000000000000000000088000000aa00000077000000cc00000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000000000000000000000000000000000000000000000000000000000000000000bbbb0000000000000000000000000000000000000000000000000000000000
-99999900444444000030000000000000000000000000000000bbbb0000bbbb00033bb330000000000000000000e0000000e00000000000000000000000000000
-99999900444444000b3bbbb00655565000000000044444400b9bb9b00bbbbbb00bbaabb000000000000000000ee000000ee00000000000000000000000000000
-99999900444444000bbbbbb0055665500000000004bbb4b03bbbbbb33b9bb9b333beeb3300000000000000000ee0ff000ee0ff00000000000000000000000000
-99999900444444000bbb3b300655556000000000044bbbb033baab333bbbbbb33b3883b3000000000000000000eeff0000eeeff0000000000000000000000000
-99999900444444000bbbb3b0055655500000000004b3b3b03b3993b3b3baab3b3b3883b300000000000000000e4efe0000e4e400000000000000000000000000
-99999900444444000bbbbbb0056556600000000004bb3bb00b3993b0b339933b0b3993b000000000000000000ee4ee0000eefe00000000000000000000000000
-00000000000000000bbbbbb00556555000000000044bbbb003b00b300bb00bb00b3003b0000000000000000000eee000000ee000000000000000000000000000
-00000000000000000994994000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000944949000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000494944009449440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000444444004494490000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000444444004944490000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000444444004494940000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000009444440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000004949490000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000bbbb0000bbbb00033bb33000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000bbbbbb00b9bb9b00bbaabb00000000000000000000cc00000000000000000000000000000000000
+0000000000000000000000000000000000000000000000003b9bb9b33bbbbbb333beeb33000000000000000000cccc0000000000000000000000000000000000
+0000000000000000000000000000000000000000000000003bbbbbb333baab333b3883b3000000000000000000cccc0000000000000000000000000000000000
+000000000000000000000000000000000000000000000000b3baab3b3b3993b33b3883b30000000000000000000cc00000000000000000000000000000000000
+000000000000000000000000000000000000000000000000b339933b0b3993b00b3993b000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000bb00bb003b00b300b3003b000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+99999900444444000030000000000000000000000000000000baab0000b99b0000b88b00000000000000000000e0000000e00000000000000000000000000000
+99999900444444000b3bbbb0065556500000000000000000bb9bb9bbbbbaabbbb3beeb3b00000000000000000ee000000ee00000000000000000000000000000
+99999900444444000bbbbbb00556655000000000000000003bbbbbb33b9bb9b33bbaabb300000000000000000ee0ff000ee0ff00000000000000000000000000
+99999900444444000bbb3b30065555600000000000000000bbbbbbbb3bbbbbb3b33bb33b000000000000000000eeff0000eeeff0000000000000000000000000
+99999900444444000bbbb3b0055655500000000000000000b3bbbb3bb3bbbb3b3bbbbbb300000000000000000e4efe0000e4e400000000000000000000000000
+99999900444444000bbbbbb00565566000000000000000003b3333b33bb33bb333bbbb3300000000000000000ee4ee0000eefe00000000000000000000000000
+00000000000000000bbbbbb0055655500000000000000000033333300333333003333330000000000000000000eee000000ee000000000000000000000000000
+00000000000000000994994000000000000000000000000000000000000000000bb3b00000000000000000000000000000000000000000000000000000000000
+000000000000000009449490000000000000000000000000003bbb0000bbbb00bbb3bb0000000000000000000000000000000000000000000000000000000000
+00000000000000000494944009449440000000000000000003bbb9b00bbb9bb0bbbbae0000000000000000000000000000000000000000000000000000000000
+00000000000000000444444004494490000000000000000033bbbba03bbbba90bbb3aee000000000000000000000000000000000000000000000000000000000
+00000000000000000444444004944490000000000000000033bbb9ab3bbb9a9b3bb3be8000000000000000000000000000000000000000000000000000000000
+0000000000000000044444400449494000000000000000003b3bbb9033bbbb30b33b338000000000000000000000000000000000000000000000000000000000
+000000000000000000000000094444400000000000000000b333b330b333bb30b333bb9000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000494949000000000000000000bb30bb00bb303b00bb303b000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
