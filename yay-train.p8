@@ -152,12 +152,21 @@ function load_entity_row(r)
 		local facing_dir=level.entity_list[i][5]
 		if row==r then
 			-- we have an entity to spawn
-			spawn_entity(type,is_grounded,col,row,facing_dir)
+			spawn_entity_at_tile(type,is_grounded,col,row,facing_dir)
 		end
 	end
 end
 
-function spawn_entity(type,is_grounded,col,row,facing_dir)
+function spawn_entity_at_pos(type,x,z,facing_dir)
+	local entity=instantiate_entity(type)
+	entity["x"]=x
+	entity["z"]=z
+	entity["facing_dir"]=facing_dir
+	add(new_entities,entity)
+	return entity
+end
+
+function spawn_entity_at_tile(type,is_grounded,col,row,facing_dir)
 	local entity=instantiate_entity(type)
 	entity["x"]=col*tile_size
 	entity["z"]=row*tile_size
@@ -168,9 +177,6 @@ function spawn_entity(type,is_grounded,col,row,facing_dir)
 		entity["is_grounded"]=true
 	end
 	add(new_entities,entity)
-	if type=="train_engine" then
-		player_entity=entity
-	end
 	return entity
 end
 
@@ -187,12 +193,14 @@ function instantiate_entity(type)
 		["depth"]=entity_def["depth"],
 		["facing_dir"]=4,
 		["action"]="standing",
+		["frames_alive"]=0,
 		["frames_in_action"]=0,
 		["is_mobile_grounded"]=entity_def["is_mobile_grounded"],
 		["is_mobile_airborne"]=entity_def["is_mobile_airborne"],
 		["is_grounded"]=false,
 		["is_alive"]=true,
-		["animation"]={}
+		["animation"]={},
+		["can_shoot"]=entity_def["can_shoot"]
 	}
 	if entity_def["is_mobile_grounded"] then
 		entity["grounded_move_dir"]=0
@@ -205,7 +213,7 @@ function instantiate_entity(type)
 		entity["airborne_vy"]=0
 		entity["airborne_vz"]=0
 	end
-	-- unpack animations
+	-- unpack each action's animation
 	local action
 	local anim
 	for action,anim in pairs(entity_def.animation) do
@@ -221,6 +229,12 @@ function instantiate_entity(type)
 			entity.animation[action][3]=anim
 			entity.animation[action][4]=anim
 		end
+	end
+	-- configure shooting
+	if entity_def["can_shoot"] then
+		entity["frames_to_shot"]=entity_def["frames_to_shot"]
+		entity["frames_between_shots"]=entity_def["frames_between_shots"]
+		entity["shoot_frame"]=entity_def["shoot_frame"]
 	end
 	return entity
 end
@@ -241,7 +255,33 @@ end
 
 -- update
 function update_entity(entity)
+	-- update timers
+	entity.frames_alive+=1
 	entity.frames_in_action+=1
+	if entity.frames_in_action>animation_frame_mult*#entity.animation[entity.action][entity.facing_dir] and entity.action!="standing" then
+		entity.action="standing"
+		entity.frames_in_action=0
+	end
+	if entity.can_shoot then
+		if entity.frames_to_shot>0 then
+			entity.frames_to_shot-=1
+		end
+		if entity.action=="shooting" and entity.frames_in_action==entity.shoot_frame then
+			spawn_entity_at_pos("enemy_bullet",entity.x+20,entity.z,entity.facing_dir)
+		end
+	end
+	-- entity-specific code
+	if entity.type=="turret" and entity.frames_to_shot<=0 then
+		shoot_entity(entity)
+	end
+end
+
+function shoot_entity(entity)
+	if entity.animation.shooting then
+		entity.action="shooting"
+		entity.frames_in_action=0
+	end
+	entity.frames_to_shot=entity.frames_between_shots
 end
 
 -- function update_grid_entity(entity)
@@ -274,11 +314,11 @@ end
 -- 	end
 -- 	-- the player can shoot bullets!
 -- 	if entity.type=="train_engine" then
--- 		if entity.frames_to_next_shot>0 then
--- 			entity.frames_to_next_shot-=1
+-- 		if entity.frames_to_shot>0 then
+-- 			entity.frames_to_shot-=1
 -- 		elseif btn(4) then
 -- 			spawn_free_entity("player_bullet",entity.x,entity.z,0,2)
--- 			entity.frames_to_next_shot=entity.frames_between_shots
+-- 			entity.frames_to_shot=entity.frames_between_shots
 -- 		end
 -- 	end
 -- end
@@ -531,7 +571,8 @@ entities_library={
 		["is_mobile_airborne"]=false,
 		["animation"]={
 			["standing"]={["front"]={2},["back"]={3},["sides"]={1}}
-		}
+		},
+		["can_shoot"]=false
 	},
 	["turret"]={
 		["width"]=6,
@@ -539,17 +580,23 @@ entities_library={
 		["is_mobile_grounded"]=false,
 		["is_mobile_airborne"]=false,
 		["animation"]={
-			["standing"]={38,38,38,39,39,39}
-		}
+			["standing"]={38,38,38,39,39,39},
+			["shooting"]={38,39,38,39,40,40,40,38},
+		},
+		["can_shoot"]=true,
+		["frames_to_shot"]=40,
+		["frames_between_shots"]=300,
+		["shoot_frame"]=20
 	},
-	["bullet"]={
+	["enemy_bullet"]={
 		["width"]=6,
 		["depth"]=6,
 		["is_mobile_grounded"]=false,
 		["is_mobile_airborne"]=true,
 		["animation"]={
-			-- TODO
-		}
+			["standing"]={27}
+		},
+		["can_shoot"]=false
 	}
 }
 levels={
