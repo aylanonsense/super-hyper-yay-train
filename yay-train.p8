@@ -2,13 +2,15 @@ pico-8 cartridge // http://www.pico-8.com
 version 8
 __lua__
 -- constants
-debug_frame_rate_slowdown=1
+debug_frame_rate_slowdown=1 -- 1 = no slowdown
 draw_debug_shapes=false
 draw_sprites=true
 tile_size=6
 camera_pan_freq=6
 min_row_lead=2
 max_row_lead=8
+entity_spawn_row_lead=0
+animation_frame_mult=5
 opposite_dirs={2,1,4,3}
 
 
@@ -28,10 +30,12 @@ game_frame=0
 level=nil
 player_entity=nil
 tiles={}
+new_entities={}
 entities={}
 effects={}
 min_row=nil
 max_row=nil
+prev_loaded_entity_row=0
 camera_pan_z=0
 
 
@@ -54,10 +58,12 @@ function reset()
 	level=nil
 	player_entity=nil
 	tiles={}
+	new_entities={}
 	entities={}
 	effects={}
 	min_row=nil
 	max_row=nil
+	prev_loaded_entity_row=0
 	camera_pan_z=0
 end
 
@@ -68,11 +74,15 @@ function load_level(l)
 	check_for_tile_load()
 
 	-- create entities
-	player_entity=spawn_grid_entity("train_engine",level.spawn_pos[1],level.spawn_pos[2])
-	prev_player_x=player_entity.x
-	prev_player_z=player_entity.z
-end
+	check_for_entity_load()
+	add_all(entities,new_entities)
+	new_entities={}
 
+	-- create entities
+	-- player_entity=spawn_grid_entity("train_engine",level.spawn_pos[1],level.spawn_pos[2],3)
+	-- prev_player_x=player_entity.x
+	-- prev_player_z=player_entity.z
+end
 
 function check_for_tile_load()
 	-- figure out which rows the user can see
@@ -81,8 +91,8 @@ function check_for_tile_load()
 
 	-- figure out if we need to load more rows
 	if min_row==nil or max_row==nil or (max_row<max_viewable_row+min_row_lead and max_row<#level.tile_map) then
-		min_row=min_viewable_row
-		max_row=min(#level.tile_map,max_viewable_row+max_row_lead)
+		min_row=max(1,min_viewable_row)
+		max_row=max(1,min(#level.tile_map,max_viewable_row+max_row_lead))
 		load_level_tiles()
 	end
 end
@@ -119,31 +129,99 @@ function load_level_tile_row(r)
 	return row_tiles
 end
 
-function spawn_grid_entity(type,col,row)
+function check_for_entity_load()
+	local max_viewable_row=flr((camera_pan_z+128)/tile_size)+1
+	local first_row=prev_loaded_entity_row+1
+	local last_row=max_viewable_row+entity_spawn_row_lead
+	if last_row>0 and first_row<=last_row then
+		local r
+		for r=first_row,last_row do
+			load_entity_row(r)
+		end
+		prev_loaded_entity_row=last_row
+	end
+end
+
+function load_entity_row(r)
+	local i
+	for i=1,#level.entity_list do
+		local type=level.entity_list[i][1]
+		local is_grounded=level.entity_list[i][2]
+		local col=level.entity_list[i][3]
+		local row=level.entity_list[i][4]
+		local facing_dir=level.entity_list[i][5]
+		if row==r then
+			-- we have an entity to spawn
+			spawn_entity(type,is_grounded,col,row,facing_dir)
+		end
+	end
+end
+
+function spawn_entity(type,is_grounded,col,row,facing_dir)
+	local entity=instantiate_entity(type)
+	entity["x"]=col*tile_size
+	entity["z"]=row*tile_size
+	entity["facing_dir"]=facing_dir
+	if is_grounded then
+		entity["col"]=col
+		entity["row"]=row
+		entity["is_grounded"]=true
+	end
+	add(new_entities,entity)
+	if type=="train_engine" then
+		player_entity=entity
+	end
+	return entity
+end
+
+function instantiate_entity(type)
+	local entity_def=entities_library[type]
 	local entity={
 		["type"]=type,
-		["x"]=col*tile_size,
+		["x"]=0,
 		["y"]=0,
-		["z"]=row*tile_size,
-		["width"]=tile_size,
-		["depth"]=tile_size,
-		["facing_dir"]=3,
+		["z"]=0,
+		["col"]=nil,
+		["row"]=nil,
+		["width"]=entity_def["width"],
+		["depth"]=entity_def["depth"],
+		["facing_dir"]=4,
+		["action"]="standing",
+		["frames_in_action"]=0,
+		["is_mobile_grounded"]=entity_def["is_mobile_grounded"],
+		["is_mobile_airborne"]=entity_def["is_mobile_airborne"],
+		["is_grounded"]=false,
 		["is_alive"]=true,
-		-- grid-specific values
-		["is_grid_entity"]=true,
-		["col"]=col,
-		["row"]=row,
-		["move_dir"]=3,
-		["move_frames_left"]=0,
-		["tile_update_frame"]=3, -- 1 means "after last frame of movement"
-		["move_pattern"]={1,1,1,1,1,1}
+		["animation"]={}
 	}
-	if type=="train_engine" then
-		entity["side_frames"]={1}
-		entity["front_frames"]={2}
-		entity["back_frames"]={3}
+	if entity_def["is_mobile_grounded"] then
+		entity["grounded_move_dir"]=0
+		entity["grounded_move_frames_left"]=0
+		entity["grounded_update_frame"]=entity_def["grounded_update_frame"]
+		entity["grounded_move_pattern"]=entity_def["grounded_move_pattern"]
 	end
-	add(entities,entity)
+	if entity_def["is_mobile_airborne"] then
+		entity["airborne_vx"]=0
+		entity["airborne_vy"]=0
+		entity["airborne_vz"]=0
+	end
+	-- unpack animations
+	local action
+	local anim
+	for action,anim in pairs(entity_def.animation) do
+		entity.animation[action]={}
+		if anim["sides"] and anim["back"] and anim["front"] then
+			entity.animation[action][1]=anim["sides"]
+			entity.animation[action][2]=anim["sides"]
+			entity.animation[action][3]=anim["back"]
+			entity.animation[action][4]=anim["front"]
+		else
+			entity.animation[action][1]=anim
+			entity.animation[action][2]=anim
+			entity.animation[action][3]=anim
+			entity.animation[action][4]=anim
+		end
+	end
 	return entity
 end
 
@@ -163,134 +241,139 @@ end
 
 -- update
 function update_entity(entity)
-	if entity.is_grid_entity then
-		update_grid_entity(entity)
-	else
-		update_free_entity(entity)
-	end
+	entity.frames_in_action+=1
 end
 
-function update_grid_entity(entity)
-	if entity.move_frames_left>0 then
-		local col=entity.col
-		local row=entity.row
-		local dist=entity.move_pattern[entity.move_frames_left]
-		-- moving left
-		if entity.move_dir==1 then
-			entity.x-=dist
-			col-=1
-		-- moving right
-		elseif entity.move_dir==2 then
-			entity.x+=dist
-			col+=1
-		-- moving up
-		elseif entity.move_dir==3 then
-			entity.z+=dist
-			row+=1
-		-- moving down
-		elseif entity.move_dir==4 then
-			entity.z-=dist
-			row-=1
-		end
-		if entity.move_frames_left==entity.tile_update_frame then
-			entity.col=col
-			entity.row=row
-		end
-		entity.move_frames_left-=1
-	end
-end
+-- function update_grid_entity(entity)
+-- 	if entity.move_frames_left>0 then
+-- 		local col=entity.col
+-- 		local row=entity.row
+-- 		local dist=entity.move_pattern[entity.move_frames_left]
+-- 		-- moving left
+-- 		if entity.move_dir==1 then
+-- 			entity.x-=dist
+-- 			col-=1
+-- 		-- moving right
+-- 		elseif entity.move_dir==2 then
+-- 			entity.x+=dist
+-- 			col+=1
+-- 		-- moving up
+-- 		elseif entity.move_dir==3 then
+-- 			entity.z+=dist
+-- 			row+=1
+-- 		-- moving down
+-- 		elseif entity.move_dir==4 then
+-- 			entity.z-=dist
+-- 			row-=1
+-- 		end
+-- 		if entity.move_frames_left==entity.tile_update_frame then
+-- 			entity.col=col
+-- 			entity.row=row
+-- 		end
+-- 		entity.move_frames_left-=1
+-- 	end
+-- 	-- the player can shoot bullets!
+-- 	if entity.type=="train_engine" then
+-- 		if entity.frames_to_next_shot>0 then
+-- 			entity.frames_to_next_shot-=1
+-- 		elseif btn(4) then
+-- 			spawn_free_entity("player_bullet",entity.x,entity.z,0,2)
+-- 			entity.frames_to_next_shot=entity.frames_between_shots
+-- 		end
+-- 	end
+-- end
 
-function update_free_entity(entity)
-end
+-- function update_free_entity(entity)
+-- 	entity.x+=entity.vx
+-- 	entity.z+=entity.vz
+-- end
 
 function update_effect(effect)
 end
 
-function move_grid_entity(entity,dir)
-	entity.move_dir=dir
-	entity.move_frames_left=#entity.move_pattern
-end
+-- function move_grid_entity(entity,dir)
+-- 	entity.move_dir=dir
+-- 	entity.move_frames_left=#entity.move_pattern
+-- end
 
-function revise_grid_entity_move(entity,x,z,dir)
-	entity.x=x
-	entity.z=z
-	entity.move_dir=dir
-	local dist=entity.move_pattern[entity.move_frames_left+1]
-	if entity.move_dir==1 then
-		entity.x-=dist
-	elseif entity.move_dir==2 then
-		entity.x+=dist
-	elseif entity.move_dir==3 then
-		entity.z+=dist
-	elseif entity.move_dir==4 then
-		entity.z-=dist
-	end
-end
+-- function revise_grid_entity_move(entity,x,z,dir)
+-- 	entity.x=x
+-- 	entity.z=z
+-- 	entity.move_dir=dir
+-- 	local dist=entity.move_pattern[entity.move_frames_left+1]
+-- 	if entity.move_dir==1 then
+-- 		entity.x-=dist
+-- 	elseif entity.move_dir==2 then
+-- 		entity.x+=dist
+-- 	elseif entity.move_dir==3 then
+-- 		entity.z+=dist
+-- 	elseif entity.move_dir==4 then
+-- 		entity.z-=dist
+-- 	end
+-- end
 
 function _update()
+	-- sometimes we don't run the code
 	actual_frame+=1
-	if actual_frame%debug_frame_rate_slowdown!=0 then
-		return
-	end
-	if not is_running then
+	if actual_frame%debug_frame_rate_slowdown!=0 or not is_running then
 		return
 	end
 
 	-- handle inputs
-	local curr_btns={}
-	local held_dir=0
-	local i
-	for i=1,4 do
-		curr_btns[i]=btn(i-1)
-		if curr_btns[i] then
-			held_dir=i
-			if not prev_btns[i] then
-				if pressed_dir==0 then
-					if i!=player_entity.move_dir and i!=opposite_dirs[player_entity.move_dir] then
-						pressed_dir=i
-					end
-				end
-			end
-		end
-	end
+	-- local curr_btns={}
+	-- local held_dir=0
+	-- local i
+	-- for i=1,4 do
+	-- 	curr_btns[i]=btn(i-1)
+	-- 	if curr_btns[i] and player_entity!=nil then
+	-- 		held_dir=i
+	-- 		if not prev_btns[i] and pressed_dir==0 and i!=player_entity.move_dir and i!=opposite_dirs[player_entity.move_dir] then
+	-- 			pressed_dir=i
+	-- 		end
+	-- 	end
+	-- end
 
 	-- whenever the player would stop moving, start moving agian
-	if player_entity.move_frames_left<=0 then
-		prev_player_move_dir=player_entity.move_dir
-		if pressed_dir!=0 then
-			move_grid_entity(player_entity,pressed_dir)
-			pressed_dir=0
-			curr_move_is_press=true
-		else
-			move_grid_entity(player_entity,player_entity.move_dir)
-			curr_move_is_press=false
-		end
-		player_entity.facing_dir=player_entity.move_dir
-		prev_player_x=player_entity.x
-		prev_player_z=player_entity.z
-	-- we allow the player to revise their movement, feels tighter
-	elseif player_entity.move_frames_left==#player_entity.move_pattern-1 then
-		if curr_move_is_press==false and pressed_dir!=0 then
-			if pressed_dir!=prev_player_move_dir and pressed_dir!=opposite_dirs[prev_player_move_dir] then
-				revise_grid_entity_move(player_entity,prev_player_x,prev_player_z,pressed_dir)
-				pressed_dir=0
-				curr_move_is_press=true
-				player_entity.facing_dir=player_entity.move_dir
-			end
-		end
-	end
+	-- if player_entity!=nil then
+	-- 	if player_entity.move_frames_left<=0 then
+	-- 		prev_player_move_dir=player_entity.move_dir
+	-- 		if pressed_dir!=0 then
+	-- 			move_grid_entity(player_entity,pressed_dir)
+	-- 			pressed_dir=0
+	-- 			curr_move_is_press=true
+	-- 		else
+	-- 			move_grid_entity(player_entity,player_entity.move_dir)
+	-- 			curr_move_is_press=false
+	-- 		end
+	-- 		player_entity.facing_dir=player_entity.move_dir
+	-- 		prev_player_x=player_entity.x
+	-- 		prev_player_z=player_entity.z
+
+	-- 	-- we allow the player to revise their movement, feels tighter
+	-- 	elseif player_entity.move_frames_left==#player_entity.move_pattern-1 and not curr_move_is_press and pressed_dir!=0 and pressed_dir!=prev_player_move_dir and pressed_dir!=opposite_dirs[prev_player_move_dir] then
+	-- 		revise_grid_entity_move(player_entity,prev_player_x,prev_player_z,pressed_dir)
+	-- 		pressed_dir=0
+	-- 		curr_move_is_press=true
+	-- 		player_entity.facing_dir=player_entity.move_dir
+	-- 	end
+	-- end
 
 	-- pan the camera
 	if game_frame%camera_pan_freq==0 then
 		camera_pan_z+=1
 	end
 
-	-- load more tiles if we have to
+	-- load more of the level if we have to
 	check_for_tile_load()
+	check_for_entity_load()
 
 	-- update entities/effects
 	foreach(entities,update_entity)
 	foreach(effects,update_effect)
+
+	-- add new entities to the game
+	add_all(entities,new_entities)
+	new_entities={}
 
 	-- cull dead entities/effects
 	entities=filter_list(entities,is_alive)
@@ -315,28 +398,21 @@ end
 function draw_entity(entity)
 	local x=entity.x
 	local y=-entity.y-entity.z
-	if draw_debug_shapes then
-		rectfill(x,y,x+entity.width-1,y+entity.depth-1,10)
-	end
 	if draw_sprites then
-		local frame
-		local flipped=false
-		-- moving left
-		if entity.facing_dir==1 then
-			frame=entity.side_frames[game_frame%#entity.side_frames+1]
-			flipped=true
-		-- moving right
-		elseif entity.facing_dir==2 then
-			frame=entity.side_frames[game_frame%#entity.side_frames+1]
-		-- moving up
-		elseif entity.facing_dir==3 then
-			frame=entity.back_frames[game_frame%#entity.back_frames+1]
-		-- moving down
-		elseif entity.facing_dir==4 then
-			frame=entity.front_frames[game_frame%#entity.front_frames+1]
+		local f = entity.frames_in_action
+		if entity.action=="standing" then
+			f = game_frame
 		end
-		-- draw sprite
+		local frames=entity.animation[entity.action][entity.facing_dir]
+		local frame=frames[flr(f/animation_frame_mult)%#frames+1]
+		local flipped=false
+		if entity.facing_dir==1 then
+			flipped=true
+		end
 		spr(frame,x-1,y-2,1,1,flipped,false)
+	end
+	if draw_debug_shapes then
+		rect(x,y,x+entity.width-1,y+entity.depth-1,14)
 	end
 end
 
@@ -348,7 +424,7 @@ function _draw()
 	if draw_debug_shapes or draw_sprites then
 		camera()
 		rectfill(0,0,127,127,0)
-		camera(0,-128-camera_pan_z)
+		camera(5,-128-camera_pan_z)
 	end
 
 	-- draw tiles
@@ -389,7 +465,7 @@ function sort_list(list,func)
 		local j=i
 		while j>1 and func(list[j-1],list[j]) do
 			list[j],list[j-1]=list[j-1],list[j]
-			j=j-1
+			j-=1
 		end
 	end
 end
@@ -424,6 +500,10 @@ function is_rendered_on_top(a,b)
 	return false
 end
 
+function entities_are_overlapping(a,b)
+	return rects_are_overlapping(a.x,a.z,a.x+a.width-1,a.z+a.depth-1,b.x,b.z,b.x+b.width-1,b.z+b.depth-1)
+end
+
 function rects_are_overlapping(x1,y1,x2,y2,x3,y3,x4,y4)
 	if x2 < x3 or x4 < x1 or y2 < y3 or y4 < y1 then
 		return false
@@ -431,67 +511,114 @@ function rects_are_overlapping(x1,y1,x2,y2,x3,y3,x4,y4)
 	return true
 end
 
+function add_all(list,list2)
+	local i
+	for i=1,#list2 do
+		add(list,list2[i])
+	end
+	return list
+end
+
 
 -- level data
+entities_library={
+	["train_engine"]={
+		["width"]=6,
+		["depth"]=6,
+		["is_mobile_grounded"]=true,
+		["grounded_update_frame"]=2,
+		["grounded_move_pattern"]={1,1,1,1,1,1},
+		["is_mobile_airborne"]=false,
+		["animation"]={
+			["standing"]={["front"]={2},["back"]={3},["sides"]={1}}
+		}
+	},
+	["turret"]={
+		["width"]=6,
+		["depth"]=6,
+		["is_mobile_grounded"]=false,
+		["is_mobile_airborne"]=false,
+		["animation"]={
+			["standing"]={38,38,38,39,39,39}
+		}
+	},
+	["bullet"]={
+		["width"]=6,
+		["depth"]=6,
+		["is_mobile_grounded"]=false,
+		["is_mobile_airborne"]=true,
+		["animation"]={
+			-- TODO
+		}
+	}
+}
 levels={
 	{
 		["spawn_pos"]={8,3},
 		["tile_library"]={
-			["1"]={34,false}
+			["1"]={35,false}
+		},
+		["entity_list"]={
+			-- type,is_grounded,col,row,facing_dir
+			{"train_engine",true,9,2,3},
+			{"turret",true,5,6,3},
+			{"turret",true,15,8,2},
+			{"turret",true,9,29,4},
+			{"turret",true,13,19,1}
 		},
 		["tile_map"]={
-			"          11111 ",
-			"         11   11",
-			"         111  11",
-			"          11111 ",
-			"         111  11",
-			"         11    1",
-			"         11   11",
-			"          11111 ",
-			"    111111111   ",
-			"          111   ",
-			"          11    ",
-			"         111    ",
-			"   11111 11     ",
-			"  11   1111     ",
-			" 11     11      ",
-			" 11111          ",
-			"111  11         ",
-			"11    11111111  ",
-			"11   11 11      ",
-			" 11111  11      ",
-			"        11111   ",
-			"            111 ",
-			"              11",
-			"        11   11 ",
-			"         11111  ",
-			"           11   ",
-			"      111  11   ",
-			"      11   11   ",
-			"     11    11   ",
-			"     1111111111 ",
-			"           11   ",
-			"  111111   11   ",
-			" 11  11111 11   ",
-			"        11111   ",
-			"        11      ",
-			"     1111       ",
-			"   111  11      ",
-			"         11111  ",
-			"111     11   11 ",
-			" 111   11     11",
-			"   11111     11 ",
-			"           111  ",
-			"         111    ",
-			"        111     ",
-			"        11111111",
-			"      1111      ",
-			"    111111      ",
-			"       11       ",
-			"       11       ",
-			"       11       ",
-			"       111      ",
-			"    11111111    "
+			"11        11111    11",
+			"1        11   11    1",
+			"         111  11     ",
+			"          11111      ",
+			"         111  11     ",
+			"         11    1     ",
+			"         11   11     ",
+			"          11111      ",
+			"    111111111        ",
+			"          111        ",
+			"          11         ",
+			"         111         ",
+			"   11111 11          ",
+			"  11   1111          ",
+			" 11     11           ",
+			" 11111               ",
+			"111  11              ",
+			"11    11111111       ",
+			"11   11 11           ",
+			" 11111  11           ",
+			"        11111        ",
+			"            111      ",
+			"              11     ",
+			"        11   11      ",
+			"         11111       ",
+			"           11        ",
+			"      111  11        ",
+			"      11   11        ",
+			"     11    11        ",
+			"     1111111111      ",
+			"           11        ",
+			"  111111   11        ",
+			" 11  11111 11        ",
+			"        11111        ",
+			"        11           ",
+			"     1111            ",
+			"   111  11           ",
+			"         11111       ",
+			"111     11   11      ",
+			" 111   11     11     ",
+			"   11111     11      ",
+			"           111       ",
+			"         111         ",
+			"        111          ",
+			"        11111111     ",
+			"      1111           ",
+			"    111111           ",
+			"       11            ",
+			"       11            ",
+			"       11            ",
+			"1      111          1",
+			"11  11111111       11"
 		}
 	}
 }
@@ -499,35 +626,35 @@ __gfx__
 00000000088800990088880000099000000000000000000000888000008888000088880000000000000000000000000000000000000000000000000000000000
 00000000888880880888888000888800000000000088880088888880088888800888888000000000000000000000000000000000000000000000000000000000
 00000000092908080092290008888880089898000095590008282800088228800882288000000000000000000000000000000000000000000000000000000000
-00000000092989980292292000922900085558000085580008282800008888000088880000000000000000000000000000000000000000000000000000000000
-00000000298988880988889002922920085558000095590009989900009229000098890000000000000000000000000000000000000000000000000000000000
-00000000588889990989989008888880589898000088880008888800008228000088880000000000000000000000000000000000000000000000000000000000
-00000000022222250255552008222280022222000022220002222200002222000088880000000000000000000000000000000000000000000000000000000000
-00000000025025050555555005200250025025000052250002502500005225000052250000000000000000000000000000000000000000000000000000000000
+0000000009298998029229200092290008555800008558000828280000888800008888000000000000000000000cc00000077000000000000000000000000000
+0000000029898888098888900292292008555800009559000998990000922900009889000000000000000000000cc00000077000000000000000000000000000
+0000000058888999098998900888888058989800008888000888880000822800008888000000000000000000000cc00000077000000000000000000000000000
+0000000002222225025555200822228002222200002222000222220000222200008888000000000000000000000cc00000077000000000000000000000000000
+0000000002502505055555500520025002502500005225000250250000522500005225000000000000000000000cc00000077000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000088000000aa00000077000000cc00000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000088880000aaaa000077770000cccc0000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000088880000aaaa000077770000cccc0000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000088000000aa00000077000000cc00000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-999999004444440000300000000003000000000000000000000000000000000000e0000000e00000000000000000000000000000000000000000000000000000
-99999900444444000b3bbbb004bbb3b0044444400444444000000000000000000ee000000ee00000000000000000000000000000000000000000000000000000
-99999900444444000bbbbbb004bbbbb00b43bb4004bbb4b000000000000000000ee0ff000ee0ff00000000000000000000000000000000000000000000000000
-99999900444444000bbb3b30044b3b300bb3bbb0044bbbb0000000000000000000eeff0000eeeff0000000000000000000000000000000000000000000000000
-99999900444444000bbbb3b004bbb3b00bbbbbb004b3b3b000000000000000000e4efe0000e4e400000000000000000000000000000000000000000000000000
-99999900444444000bbbbbb004bbbbb003bbbbb004bb3bb000000000000000000ee4ee0000eefe00000000000000000000000000000000000000000000000000
-00000000000000000bbbbbb0044bbbb003bbbbb0044bbbb0000000000000000000eee000000ee000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000bbbb0000000000000000000000000000000000000000000000000000000000
+99999900444444000030000000000000000000000000000000bbbb0000bbbb00033bb330000000000000000000e0000000e00000000000000000000000000000
+99999900444444000b3bbbb00655565000000000044444400b9bb9b00bbbbbb00bbaabb000000000000000000ee000000ee00000000000000000000000000000
+99999900444444000bbbbbb0055665500000000004bbb4b03bbbbbb33b9bb9b333beeb3300000000000000000ee0ff000ee0ff00000000000000000000000000
+99999900444444000bbb3b300655556000000000044bbbb033baab333bbbbbb33b3883b3000000000000000000eeff0000eeeff0000000000000000000000000
+99999900444444000bbbb3b0055655500000000004b3b3b03b3993b3b3baab3b3b3883b300000000000000000e4efe0000e4e400000000000000000000000000
+99999900444444000bbbbbb0056556600000000004bb3bb00b3993b0b339933b0b3993b000000000000000000ee4ee0000eefe00000000000000000000000000
+00000000000000000bbbbbb00556555000000000044bbbb003b00b300bb00bb00b3003b0000000000000000000eee000000ee000000000000000000000000000
 00000000000000000994994000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000944949000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000049494400000000000077000000ee00000088000000000000000000000000000000000000000000000000000000000000000000000000000
-000000000000000004444440000000000077770000eeee0000888800000000000000000000000000000000000000000000000000000000000000000000000000
-000000000000000004444440000000000077770000eeee0000888800000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000044444400000000000077000000ee00000088000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000494944009449440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000444444004494490000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000444444004944490000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000444444004494940000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000009444440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000004949490000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
