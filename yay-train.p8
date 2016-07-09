@@ -3,6 +3,7 @@ version 8
 __lua__
 -- constants
 debug_frame_rate_slowdown=1 -- 1 = no slowdown
+render=true
 draw_debug_shapes=false
 draw_sprites=true
 tile_size=6
@@ -15,17 +16,16 @@ opposite_dirs={2,1,4,3}
 
 
 -- input vars
-prev_btns={}
 pressed_dir=0
+prev_btns={}
 curr_move_is_press=false
 prev_player_x=nil
 prev_player_z=nil
-prev_player_move_dir=0
 
 
 -- game vars
-is_running=true
 actual_frame=0
+is_running=true
 game_frame=0
 level=nil
 player_entity=nil
@@ -42,15 +42,14 @@ camera_pan_z=0
 -- init
 function reset()
 	-- input vars
+	pressed_dir=0
 	local i
 	for i=1,4 do
 		prev_btns[i]=btn(i-1)
 	end
-	pressed_dir=0
 	curr_move_is_press=false
 	prev_player_x=nil
 	prev_player_z=nil
-	prev_player_move_dir=0
 
 	-- game vars
 	is_running=true
@@ -75,13 +74,9 @@ function load_level(l)
 
 	-- create entities
 	check_for_entity_load()
+	player_entity=spawn_entity_at_tile(level.player_spawn[1],level.player_spawn[2],level.player_spawn[3],level.player_spawn[4],level.player_spawn[5])
 	add_all(entities,new_entities)
 	new_entities={}
-
-	-- create entities
-	-- player_entity=spawn_grid_entity("train_engine",level.spawn_pos[1],level.spawn_pos[2],3)
-	-- prev_player_x=player_entity.x
-	-- prev_player_z=player_entity.z
 end
 
 function check_for_tile_load()
@@ -319,8 +314,10 @@ function update_entity(entity)
 		end
 	end
 	-- entity-specific code
-	if entity.type=="turret" and entity.frames_to_shot<=0 and game_frame%entity.frames_between_shots==0 then
-		shoot_entity(entity)
+	if entity.type=="turret" then
+		if entity.frames_to_shot<=0 and game_frame%entity.frames_between_shots==0 then
+			shoot_entity(entity)
+		end
 	end
 end
 
@@ -332,73 +329,8 @@ function shoot_entity(entity)
 	entity.frames_to_shot=entity.frames_between_shots
 end
 
--- function update_grid_entity(entity)
--- 	if entity.grounded_move_frames_left>0 then
--- 		local col=entity.col
--- 		local row=entity.row
--- 		local dist=entity.move_pattern[entity.grounded_move_frames_left]
--- 		-- moving left
--- 		if entity.grounded_move_dir==1 then
--- 			entity.x-=dist
--- 			col-=1
--- 		-- moving right
--- 		elseif entity.grounded_move_dir==2 then
--- 			entity.x+=dist
--- 			col+=1
--- 		-- moving up
--- 		elseif entity.grounded_move_dir==3 then
--- 			entity.z+=dist
--- 			row+=1
--- 		-- moving down
--- 		elseif entity.grounded_move_dir==4 then
--- 			entity.z-=dist
--- 			row-=1
--- 		end
--- 		if entity.grounded_move_frames_left==entity.grounded_update_frame then
--- 			entity.col=col
--- 			entity.row=row
--- 		end
--- 		entity.grounded_move_frames_left-=1
--- 	end
--- 	-- the player can shoot bullets!
--- 	if entity.type=="train_engine" then
--- 		if entity.frames_to_shot>0 then
--- 			entity.frames_to_shot-=1
--- 		elseif btn(4) then
--- 			spawn_free_entity("player_bullet",entity.x,entity.z,0,2)
--- 			entity.frames_to_shot=entity.frames_between_shots
--- 		end
--- 	end
--- end
-
--- function update_free_entity(entity)
--- 	entity.x+=entity.vx
--- 	entity.z+=entity.vz
--- end
-
 function update_effect(effect)
 end
-
--- function move_grid_entity(entity,dir)
--- 	entity.grounded_move_dir=dir
--- 	entity.grounded_move_frames_left=#entity.move_pattern
--- end
-
--- function revise_grid_entity_move(entity,x,z,dir)
--- 	entity.x=x
--- 	entity.z=z
--- 	entity.grounded_move_dir=dir
--- 	local dist=entity.move_pattern[entity.grounded_move_frames_left+1]
--- 	if entity.grounded_move_dir==1 then
--- 		entity.x-=dist
--- 	elseif entity.grounded_move_dir==2 then
--- 		entity.x+=dist
--- 	elseif entity.grounded_move_dir==3 then
--- 		entity.z+=dist
--- 	elseif entity.grounded_move_dir==4 then
--- 		entity.z-=dist
--- 	end
--- end
 
 function kill_if_out_of_bounds(entity)
 	if min_row!=nil and entity.z<=min_row*tile_size then
@@ -414,43 +346,32 @@ function _update()
 	end
 
 	-- handle inputs
-	-- local curr_btns={}
-	-- local held_dir=0
-	-- local i
-	-- for i=1,4 do
-	-- 	curr_btns[i]=btn(i-1)
-	-- 	if curr_btns[i] and player_entity!=nil then
-	-- 		held_dir=i
-	-- 		if not prev_btns[i] and pressed_dir==0 and i!=player_entity.grounded_move_dir and i!=opposite_dirs[player_entity.grounded_move_dir] then
-	-- 			pressed_dir=i
-	-- 		end
-	-- 	end
-	-- end
+	local curr_btns={}
+	local held_dir=0
+	local i
+	for i=1,4 do
+		curr_btns[i]=btn(i-1)
+		if curr_btns[i] and player_entity!=nil and i!=player_entity.grounded_move_dir and i!=opposite_dirs[player_entity.grounded_move_dir] then
+			held_dir=i
+			if not prev_btns[i] and pressed_dir==0 then
+				pressed_dir=i
+			end
+		end
+	end
 
-	-- whenever the player would stop moving, start moving agian
-	-- if player_entity!=nil then
-	-- 	if player_entity.grounded_move_frames_left<=0 then
-	-- 		prev_player_move_dir=player_entity.grounded_move_dir
-	-- 		if pressed_dir!=0 then
-	-- 			move_grid_entity(player_entity,pressed_dir)
-	-- 			pressed_dir=0
-	-- 			curr_move_is_press=true
-	-- 		else
-	-- 			move_grid_entity(player_entity,player_entity.grounded_move_dir)
-	-- 			curr_move_is_press=false
-	-- 		end
-	-- 		player_entity.facing_dir=player_entity.grounded_move_dir
-	-- 		prev_player_x=player_entity.x
-	-- 		prev_player_z=player_entity.z
-
-	-- 	-- we allow the player to revise their movement, feels tighter
-	-- 	elseif player_entity.grounded_move_frames_left==#player_entity.move_pattern-1 and not curr_move_is_press and pressed_dir!=0 and pressed_dir!=prev_player_move_dir and pressed_dir!=opposite_dirs[prev_player_move_dir] then
-	-- 		revise_grid_entity_move(player_entity,prev_player_x,prev_player_z,pressed_dir)
-	-- 		pressed_dir=0
-	-- 		curr_move_is_press=true
-	-- 		player_entity.facing_dir=player_entity.grounded_move_dir
-	-- 	end
-	-- end
+	-- move the player
+	if player_entity!=nil and player_entity.grounded_move_frames_left<=0 then
+		if pressed_dir!=0 then
+			player_entity.grounded_move_dir=pressed_dir
+			pressed_dir=0
+		elseif held_dir!=0 then
+			player_entity.grounded_move_dir=held_dir
+		else
+			player_entity.grounded_move_dir=player_entity.facing_dir
+		end
+		player_entity.grounded_move_frames_left=#player_entity.grounded_move_pattern
+		player_entity.facing_dir=player_entity.grounded_move_dir
+	end
 
 	-- pan the camera
 	if game_frame%camera_pan_freq==0 then
@@ -517,12 +438,14 @@ function draw_effect(effect)
 end
 
 function _draw()
-	-- reset background
-	if draw_debug_shapes or draw_sprites then
-		camera()
-		rectfill(0,0,127,127,0)
-		camera(5,-128-camera_pan_z)
+	if not render then
+		return
 	end
+
+	-- reset background
+	camera()
+	rectfill(0,0,127,127,0)
+	camera(5,-128-camera_pan_z)
 
 	-- draw tiles
 	local r
@@ -666,13 +589,12 @@ entities_library={
 }
 levels={
 	{
-		["spawn_pos"]={8,3},
+		["player_spawn"]={"train_engine",true,9,2,3},
 		["tile_library"]={
 			["1"]={35,false}
 		},
 		["entity_list"]={
 			-- type,is_grounded,col,row,facing_dir
-			{"train_engine",true,9,2,3},
 			{"turret",true,5,6,3},
 			{"turret",true,15,8,2},
 			{"turret",true,9,29,4},
