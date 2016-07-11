@@ -7,7 +7,7 @@ render=true
 draw_debug_shapes=false
 draw_sprites=true
 tile_size=6
-camera_pan_freq=6
+camera_pan_freq=12
 min_row_lead=2
 max_row_lead=8
 entity_spawn_row_lead=0
@@ -154,22 +154,22 @@ end
 
 function spawn_entity_at_pos(type,x,z,facing_dir)
 	local entity=instantiate_entity(type)
-	entity["x"]=x
-	entity["z"]=z
-	entity["facing_dir"]=facing_dir
+	entity.x=x
+	entity.z=z
+	entity.facing_dir=facing_dir
 	add(new_entities,entity)
 	return entity
 end
 
 function spawn_entity_at_tile(type,is_grounded,col,row,facing_dir)
 	local entity=instantiate_entity(type)
-	entity["x"]=col*tile_size
-	entity["z"]=row*tile_size
-	entity["facing_dir"]=facing_dir
+	entity.x=col*tile_size
+	entity.z=row*tile_size
+	entity.facing_dir=facing_dir
 	if is_grounded then
-		entity["col"]=col
-		entity["row"]=row
-		entity["is_grounded"]=true
+		entity.col=col
+		entity.row=row
+		entity.is_grounded=true
 	end
 	add(new_entities,entity)
 	return entity
@@ -187,7 +187,7 @@ function instantiate_entity(type)
 		["width"]=entity_def.width,
 		["depth"]=entity_def.depth,
 		["facing_dir"]=4,
-		["action"]="standing",
+		["action"]="default",
 		["frames_alive"]=0,
 		["frames_in_action"]=0,
 		["is_mobile_grounded"]=entity_def.is_mobile_grounded,
@@ -200,19 +200,20 @@ function instantiate_entity(type)
 		["hittable_by"]=entity_def.hittable_by,
 		["has_hitbox"]=true,
 		["has_hurtbox"]=true,
-		["frames_to_death"]=0
+		["frames_to_death"]=0,
+		["wiggle_frames"]=0
 	}
 	if entity_def.is_mobile_grounded then
-		entity["grounded_move_dir"]=0
-		entity["grounded_move_frames_left"]=0
-		entity["grounded_update_frame"]=entity_def.grounded_update_frame
-		entity["grounded_move_pattern"]=entity_def.grounded_move_pattern
+		entity.grounded_move_dir=0
+		entity.grounded_move_frames_left=0
+		entity.grounded_update_frame=entity_def.grounded_update_frame
+		entity.grounded_move_pattern=entity_def.grounded_move_pattern
 	end
-	if entity_def["is_mobile_airborne"] then
-		entity["airborne_gravity"]=entity_def.airborne_gravity
-		entity["airborne_vx"]=0
-		entity["airborne_vy"]=0
-		entity["airborne_vz"]=0
+	if entity_def.is_mobile_airborne then
+		entity.airborne_gravity=entity_def.airborne_gravity
+		entity.airborne_vx=0
+		entity.airborne_vy=0
+		entity.airborne_vz=0
 	end
 	-- unpack each action's animation
 	local action
@@ -232,10 +233,12 @@ function instantiate_entity(type)
 		end
 	end
 	-- configure shooting
-	if entity_def["can_shoot"] then
-		entity["frames_to_shot"]=entity_def["frames_to_shot"]
-		entity["frames_between_shots"]=entity_def["frames_between_shots"]
-		entity["shoot_frame"]=entity_def["shoot_frame"]
+	if entity_def.can_shoot then
+		entity.bullet_type=entity_def.bullet_type
+		entity.bullet_speed=entity_def.bullet_speed
+		entity.frames_to_shot=0
+		entity.frames_between_shots=entity_def.frames_between_shots
+		entity.shoot_frame=entity_def.shoot_frame
 	end
 	return entity
 end
@@ -259,8 +262,8 @@ function update_entity(entity)
 	-- update timers
 	entity.frames_alive+=1
 	entity.frames_in_action+=1
-	if entity.frames_in_action>animation_frame_mult*#entity.animation[entity.action][entity.facing_dir] and entity.action!="standing" then
-		entity.action="standing"
+	if entity.frames_in_action>animation_frame_mult*#entity.animation[entity.action][entity.facing_dir] and entity.action!="default" then
+		entity.action="default"
 		entity.frames_in_action=0
 	end
 	if entity.frames_to_death>0 then
@@ -269,6 +272,9 @@ function update_entity(entity)
 			entity.is_alive=false
 			return
 		end
+	end
+	if entity.wiggle_frames>0 then
+		entity.wiggle_frames-=1
 	end
 	-- move
 	if entity.is_grounded then
@@ -315,27 +321,26 @@ function update_entity(entity)
 			entity.frames_to_shot-=1
 		end
 		if entity.action=="shooting" and entity.frames_in_action==entity.shoot_frame then
-			local bullet=spawn_entity_at_pos("enemy_bullet",entity.x+1,entity.z-1,entity.facing_dir)
-			-- moving left
-			if entity.facing_dir==1 then
-				bullet.airborne_vx=-2
-			-- moving right
-			elseif entity.facing_dir==2 then
-				bullet.airborne_vx=2
-			-- moving up
-			elseif entity.facing_dir==3 then
-				bullet.airborne_vz=2
-			-- moving down
-			elseif entity.facing_dir==4 then
-				bullet.airborne_vz=-2
-			end
+			fire_projectile(entity)
 		end
 	end
 	-- entity-specific code
 	if entity.type=="turret" then
-		if entity.frames_to_shot<=0 and game_frame%entity.frames_between_shots==0 then
+		if entity.frames_to_shot<=0 and entity.action=="default" and game_frame%entity.frames_between_shots==0 then
 			shoot_entity(entity)
 		end
+	elseif entity.type=="train_engine" then
+		if entity.frames_to_shot<=0 and btn(4) then
+			shoot_entity(entity)
+		end
+		-- if entity.frames_in_action%6==0 then
+		-- 	local poof=spawn_entity_at_pos("poof",entity.x,entity.z,3)
+		-- 	poof.y=6
+		-- 	poof.airborne_vy=1
+		-- 	poof.action="poofed"
+		-- 	poof.frames_in_action=0
+		-- 	poof.frames_to_death=animation_frame_mult*#poof.animation[poof.action][poof.facing_dir]
+		-- end
 	end
 end
 
@@ -343,8 +348,27 @@ function shoot_entity(entity)
 	if entity.animation.shooting then
 		entity.action="shooting"
 		entity.frames_in_action=0
+	else
+		fire_projectile(entity)
 	end
 	entity.frames_to_shot=entity.frames_between_shots
+end
+
+function fire_projectile(entity)
+	local bullet=spawn_entity_at_pos(entity.bullet_type,entity.x+1,entity.z-1,entity.facing_dir)
+	-- moving left
+	if entity.facing_dir==1 then
+		bullet.airborne_vx=-entity.bullet_speed
+	-- moving right
+	elseif entity.facing_dir==2 then
+		bullet.airborne_vx=entity.bullet_speed
+	-- moving up
+	elseif entity.facing_dir==3 then
+		bullet.airborne_vz=entity.bullet_speed
+	-- moving down
+	elseif entity.facing_dir==4 then
+		bullet.airborne_vz=-entity.bullet_speed
+	end
 end
 
 function update_effect(effect)
@@ -377,22 +401,28 @@ end
 
 function on_hit(hitter,hittee)
 	if hittee.type=="coin" then
-		hittee.has_hurtbox=false
-		hittee.has_hitbox=false
 		hittee.airborne_vy=1.5
-		hittee.action="picked_up"
-		hittee.frames_in_action=0
-		hittee.frames_to_death=animation_frame_mult*#hittee.animation[hittee.action][hittee.facing_dir]
+		destroy_entity(hittee)
 	elseif hittee.type=="shrub" then
-		hittee.has_hurtbox=false
-		hittee.has_hitbox=false
-		hittee.action="destroyed"
-		hittee.frames_in_action=0
-		hittee.frames_to_death=animation_frame_mult*#hittee.animation[hittee.action][hittee.facing_dir]
-	elseif hittee.type=="enemy_bullet" then
-		hittee.is_alive=false
+		destroy_entity(hittee)
+	elseif hittee.type=="enemy_bullet" or hittee.type=="player_bullet" then
+		destroy_entity(hittee)
+	elseif hittee.type=="turret" then
+		hittee.wiggle_frames=5
+		destroy_entity(hittee)
 	end
+end
 
+function destroy_entity(entity)
+	entity.has_hurtbox=false
+	entity.has_hitbox=false
+	if entity.animation.destroyed then
+		entity.action="destroyed"
+		entity.frames_in_action=0
+		entity.frames_to_death=animation_frame_mult*#entity.animation[entity.action][entity.facing_dir]
+	else
+		entity.is_alive=false
+	end
 end
 
 function kill_if_out_of_bounds(entity)
@@ -489,7 +519,7 @@ function draw_entity(entity)
 	local y=-entity.y-entity.z
 	if draw_sprites then
 		local f = entity.frames_in_action
-		if entity.action=="standing" then
+		if entity.action=="default" then
 			f = game_frame
 		end
 		local frames=entity.animation[entity.action][entity.facing_dir]
@@ -498,7 +528,11 @@ function draw_entity(entity)
 		if entity.facing_dir==1 then
 			flipped=true
 		end
-		spr(frame,x+entity.width/2-4,y-2,1,1,flipped,false)
+		local wiggle=0
+		if entity.wiggle_frames>0 then
+			wiggle=2*(game_frame%2)-1
+		end
+		spr(frame,x+entity.width/2-4+wiggle,y-2,1,1,flipped,false)
 	end
 	if draw_debug_shapes then
 		rect(x,y,x+entity.width-1,y+entity.depth-1,14)
@@ -621,9 +655,13 @@ entities_library={
 		["grounded_move_pattern"]={1,1,1,1,1,1},
 		["is_mobile_airborne"]=false,
 		["animation"]={
-			["standing"]={["front"]={2},["back"]={3},["sides"]={1}}
+			["default"]={["front"]={2},["back"]={3},["sides"]={1}}
 		},
-		["can_shoot"]=false,
+		["can_shoot"]=true,
+		["frames_between_shots"]=20,
+		["shoot_frame"]=nil,
+		["bullet_type"]="player_bullet",
+		["bullet_speed"]=3,
 		["hit_channel"]="player",
 		["hittable_by"]={}
 	},
@@ -633,7 +671,7 @@ entities_library={
 		["is_mobile_grounded"]=false,
 		["is_mobile_airborne"]=false,
 		["animation"]={
-			["standing"]={
+			["default"]={
 				["front"]={22,22,22,23,23,23},
 				["back"]={38,38,38,39,39,39},
 				["sides"]={54,54,54,55,55,55}
@@ -642,14 +680,37 @@ entities_library={
 				["front"]={22,23,22,23,24,24,24,22},
 				["back"]={38,39,38,39,40,40,40,38},
 				["sides"]={54,55,54,55,56,56,56,54}
+			},
+			["destroyed"]={
+				["front"]={24,24,87,88,89,90},
+				["back"]={40,40,87,88,89,90},
+				["sides"]={56,56,87,88,89,90}
 			}
 		},
 		["can_shoot"]=true,
-		["frames_to_shot"]=0,
+		["bullet_type"]="enemy_bullet",
+		["bullet_speed"]=1,
 		["frames_between_shots"]=60,
 		["shoot_frame"]=20,
 		["hit_channel"]="enemy",
-		["hittable_by"]={}
+		["hittable_by"]={"player_projectile"}
+	},
+	["player_bullet"]={
+		["width"]=4,
+		["depth"]=4,
+		["is_mobile_grounded"]=false,
+		["is_mobile_airborne"]=true,
+		["airborne_gravity"]=0,
+		["animation"]={
+			["default"]={
+				["front"]={14,13,14,15},
+				["back"]={14,13,14,15},
+				["sides"]={30,29,30,31}
+			}
+		},
+		["can_shoot"]=false,
+		["hit_channel"]="player_projectile",
+		["hittable_by"]={"enemy","solid_debris"}
 	},
 	["enemy_bullet"]={
 		["width"]=4,
@@ -658,7 +719,7 @@ entities_library={
 		["is_mobile_airborne"]=true,
 		["airborne_gravity"]=0,
 		["animation"]={
-			["standing"]={27}
+			["default"]={27}
 		},
 		["can_shoot"]=false,
 		["hit_channel"]="enemy_projectile",
@@ -671,12 +732,26 @@ entities_library={
 		["is_mobile_airborne"]=true,
 		["airborne_gravity"]=0.1,
 		["animation"]={
-			["standing"]={32,33,34,35},
-			["picked_up"]={32,48,49,50}
+			["default"]={32,33,34,35},
+			["destroyed"]={32,48,49,50}
 		},
 		["can_shoot"]=false,
 		["hit_channel"]="pickup",
 		["hittable_by"]={"player"}
+	},
+	["poof"]={
+		["width"]=6,
+		["depth"]=6,
+		["is_mobile_grounded"]=false,
+		["is_mobile_airborne"]=true,
+		["airborne_gravity"]=0.1,
+		["animation"]={
+			["default"]={10},
+			["poofed"]={11,10}
+		},
+		["can_shoot"]=false,
+		["hit_channel"]="effect",
+		["hittable_by"]={}
 	},
 	["shrub"]={
 		["width"]=6,
@@ -684,12 +759,12 @@ entities_library={
 		["is_mobile_grounded"]=false,
 		["is_mobile_airborne"]=false,
 		["animation"]={
-			["standing"]={69},
+			["default"]={69},
 			["destroyed"]={87,88,89,90}
 		},
 		["can_shoot"]=false,
 		["hit_channel"]="solid_debris",
-		["hittable_by"]={"enemy_projectile"}
+		["hittable_by"]={"player_projectile","enemy_projectile"}
 	}
 }
 levels={
@@ -771,28 +846,28 @@ levels={
 __gfx__
 00000000088800990088880000099000000000000000000000888000008888000088880000000000000000000000000000000000000000000000000000000000
 00000000888880880888888000888800000000000088880088888880088888800888888000011000000000000000000000000000000000000000000000000000
-000000000929080800922900088888800898980000955900082828000882288008822880001ee100000000000000000000000000000000000000000000000000
-000000000929899802922920009229000855580000855800082828000088880000888800012eee10000000000000000000000000000000000000000000000000
-0000000029898888098888900292292008555800009559000998990000922900009889000122ee10000000000000000000000000000000000000000000000000
-00000000588889990989989008888880589898000088880008888800008228000088880001222210000000000000000000000000000000000000000000000000
+000000000929080800922900088888800898980000955900082828000882288008822880001ee1000007700000000000000000000007700000088000000aa000
+000000000929899802922920009229000855580000855800082828000088880000888800012eee100077770000077000000000000007700000088000000aa000
+0000000029898888098888900292292008555800009559000998990000922900009889000122ee100077770000077000000000000007700000088000000aa000
+000000005888899909899890088888805898980000888800088888000082280000888800012222100007700000000000000000000007700000088000000aa000
 00000000022222250255552008222280022222000022220002222200002222000088880000122100000000000000000000000000000000000000000000000000
 00000000025025050555555005200250025025000052250002502500005225000052250000011000000000000000000000000000000000000000000000000000
 000000000000000000000000000000000000000000000000000000000000000000bbbb0000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000bbbb0000bbbb00033bb33000000000000000000000000000000000000000000000000000000000
-0000000000000000000000000000000000000000000000000bbbbbb00b9bb9b00bbaabb00000000000000000000cc00005454440053544400455454000000000
-0000000000000000000000000000000000000000000000003b9bb9b33bbbbbb333beeb33000000000000000000cccc0004445450043454500545545000000000
-0000000000000000000000000000000000000000000000003bbbbbb333baab333b3883b3000000000000000000cccc0004544450045444500455455000000000
-000000000000000000000000000000000000000000000000b3baab3b3b3993b33b3883b30000000000000000000cc00005454540054535300555455000000000
-000000000000000000000000000000000000000000000000b339933b0b3993b00b3993b000000000000000000000000004545450045453500555554000000000
-0000000000000000000000000000000000000000000000000bb00bb003b00b300b3003b000000000000000000000000004445450044454500455545000000000
+0000000000000000000000000000000000000000000000000bbbbbb00b9bb9b00bbaabb00455454005354440000cc00000000000000000000000000000000000
+0000000000000000000000000000000000000000000000003b9bb9b33bbbbbb333beeb33054554500434545000cccc0000000000007777000088880000aaaa00
+0000000000000000000000000000000000000000000000003bbbbbb333baab333b3883b3045545500454445000cccc0000000000007777000088880000aaaa00
+000000000000000000000000000000000000000000000000b3baab3b3b3993b33b3883b30555455005453530000cc00000000000000000000000000000000000
+000000000000000000000000000000000000000000000000b339933b0b3993b00b3993b005555540045453500000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000bb00bb003b00b300b3003b004555450044454500000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000baab0000b99b0000b88b0000e00000000000000003000000000000000000000000000000000000
-0007a0000007900000099000000970000000000000000000bb9bb9bbbbbaabbbb3beeb3b0ee00000044454400bb3bbb00dcccdd00cd55d500dd555d000000000
-0077a900000a9000009999000009a00000000000000000003bbbbbb33b9bb9b33bbaabb30ee0ff00054554500bbbbbb00ccddcc00dccd5500555d55000000000
-007aa900000a9000009999000009a0000000000000000000bbbbbbbb3bbbbbb3b33bb33b00eeff000455455003b3bbb00cccccd00dcccd50055d5dd000000000
-00aaa900000a9000009999000009a0000000000000000000b3bbbb3bb3bbbb3b3bbbbbb30e4efe00055555500b3bb3b00ddccdd00cddcdd00d55555000000000
-000a9000000a9000000990000009a00000000000000000003b3333b33bb33bb333bbbb330ee4ee00055555500bbbb3b00cddccc00ccddcd0055dd5d000000000
-00000000000000000000000000000000000000000000000003333330033333300333333000eee000055555500bbbbbb00cccddd00cddccc005555d5000000000
+0007a0000007900000099000000970000000000000000000bb9bb9bbbbbaabbbb3beeb3b0ee00000044454400bb3bbb00dcccdd00cd55d500dd555d005454440
+0077a900000a9000009999000009a00000000000000000003bbbbbb33b9bb9b33bbaabb30ee0ff00054554500bbbbbb00ccddcc00dccd5500555d55004445450
+007aa900000a9000009999000009a0000000000000000000bbbbbbbb3bbbbbb3b33bb33b00eeff000455455003b3bbb00cccccd00dcccd50055d5dd004544450
+00aaa900000a9000009999000009a0000000000000000000b3bbbb3bb3bbbb3b3bbbbbb30e4efe00055555500b3bb3b00ddccdd00cddcdd00d55555005454540
+000a9000000a9000000990000009a00000000000000000003b3333b33bb33bb333bbbb330ee4ee00055555500bbbb3b00cddccc00ccddcd0055dd5d004545450
+00000000000000000000000000000000000000000000000003333330033333300333333000eee000055555500bbbbbb00cccddd00cddccc005555d5004445450
 00000000000000000000000000000000000000000000000000000000000000000bb3b00000000000000000000000000000000000000000000000000000000000
 000000000000000000000000000000000000000000000000003bbb0000bbbb00bbb3bb0000e00000000000000000000000000000000000000000000000000000
 00077000000aa00000a00a0000000000000000000000000003bbb9b00bbb9bb0bbbbae000ee00000011111c00dcccdd00d555550055555d00544444005454440
