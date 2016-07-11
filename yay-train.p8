@@ -74,7 +74,22 @@ function load_level(l)
 
 	-- create entities
 	check_for_entity_load()
-	player_entity=spawn_entity_at_tile(level.player_spawn[1],level.player_spawn[2],level.player_spawn[3],level.player_spawn[4],level.player_spawn[5])
+
+	--create player entities
+	local col=level.player_spawn[1]
+	local row=level.player_spawn[2]
+	local num_cars=level.player_spawn[3]
+	local prev_car=spawn_entity_at_tile("train_caboose",true,col,row-1-num_cars,3)
+	-- local i
+	for i=num_cars,1,-1 do
+		local temp=spawn_entity_at_tile("train_car",true,col,row-i,3)
+		temp.follower=prev_car
+		prev_car=temp
+	end
+	player_entity=spawn_entity_at_tile("train_engine",true,col,row,3)
+	player_entity.follower=prev_car
+
+	-- add entities to scene
 	add_all(entities,new_entities)
 	new_entities={}
 end
@@ -201,7 +216,8 @@ function instantiate_entity(type)
 		["has_hitbox"]=true,
 		["has_hurtbox"]=true,
 		["frames_to_death"]=0,
-		["wiggle_frames"]=0
+		["wiggle_frames"]=0,
+		["follower"]=nil
 	}
 	if entity_def.is_mobile_grounded then
 		entity.grounded_move_dir=0
@@ -425,6 +441,16 @@ function destroy_entity(entity)
 	end
 end
 
+function move_entity(entity,dir)
+	local prev_dir=entity.facing_dir
+	entity.grounded_move_dir=dir
+	entity.facing_dir=dir
+	entity.grounded_move_frames_left=#entity.grounded_move_pattern
+	if entity.follower!=nil then
+		move_entity(entity.follower,prev_dir)
+	end
+end
+
 function kill_if_out_of_bounds(entity)
 	if min_row!=nil and entity.z<=min_row*tile_size then
 		entity.is_alive=false
@@ -454,16 +480,14 @@ function _update()
 
 	-- move the player
 	if player_entity!=nil and player_entity.grounded_move_frames_left<=0 then
+		local dir=player_entity.facing_dir
 		if pressed_dir!=0 then
-			player_entity.grounded_move_dir=pressed_dir
+			dir=pressed_dir
 			pressed_dir=0
 		elseif held_dir!=0 then
-			player_entity.grounded_move_dir=held_dir
-		else
-			player_entity.grounded_move_dir=player_entity.facing_dir
+			dir=held_dir
 		end
-		player_entity.grounded_move_frames_left=#player_entity.grounded_move_pattern
-		player_entity.facing_dir=player_entity.grounded_move_dir
+		move_entity(player_entity,dir)
 	end
 
 	-- pan the camera
@@ -665,6 +689,34 @@ entities_library={
 		["hit_channel"]="player",
 		["hittable_by"]={}
 	},
+	["train_car"]={
+		["width"]=6,
+		["depth"]=6,
+		["is_mobile_grounded"]=true,
+		["grounded_update_frame"]=2,
+		["grounded_move_pattern"]={1,1,1,1,1,1},
+		["is_mobile_airborne"]=false,
+		["animation"]={
+			["default"]={["front"]={5},["back"]={5},["sides"]={4}}
+		},
+		["can_shoot"]=false,
+		["hit_channel"]="player",
+		["hittable_by"]={}
+	},
+	["train_caboose"]={
+		["width"]=6,
+		["depth"]=6,
+		["is_mobile_grounded"]=true,
+		["grounded_update_frame"]=2,
+		["grounded_move_pattern"]={1,1,1,1,1,1},
+		["is_mobile_airborne"]=false,
+		["animation"]={
+			["default"]={["front"]={7},["back"]={8},["sides"]={6}}
+		},
+		["can_shoot"]=false,
+		["hit_channel"]="player",
+		["hittable_by"]={}
+	},
 	["turret"]={
 		["width"]=6,
 		["depth"]=6,
@@ -719,7 +771,7 @@ entities_library={
 		["is_mobile_airborne"]=true,
 		["airborne_gravity"]=0,
 		["animation"]={
-			["default"]={27}
+			["default"]={27,10}
 		},
 		["can_shoot"]=false,
 		["hit_channel"]="enemy_projectile",
@@ -769,42 +821,44 @@ entities_library={
 }
 levels={
 	{
-		["player_spawn"]={"train_engine",true,8,2,3},
+		["player_spawn"]={8,5,2}, --col,row,num_cars
 		["entity_list"]={
 			-- type,is_grounded,col,row,facing_dir
-			{"coin",false,3,13,3},
-			{"coin",false,3,14,3},
 			{"coin",false,3,15,3},
-
-			{"coin",false,11,10,3},
-			{"coin",false,11,11,3},
-			{"coin",false,11,12,3},
+			{"coin",false,3,16,3},
+			{"coin",false,3,17,3},
+			-- {"coin",false,11,12,3},
 			{"coin",false,11,13,3},
-			{"coin",false,11,14,3},
-			{"coin",false,11,15,3},
+			-- {"coin",false,11,14,3},
+			-- {"coin",false,11,15,3},
 			{"coin",false,11,16,3},
-			{"coin",false,12,10,3},
-			{"coin",false,12,11,3},
-			{"coin",false,12,12,3},
+			{"coin",false,11,17,3},
+			-- {"coin",false,11,18,3},
+			-- {"coin",false,12,12,3},
 			{"coin",false,12,13,3},
-			{"coin",false,12,14,3},
-			{"coin",false,12,15,3},
+			-- {"coin",false,12,14,3},
+			-- {"coin",false,12,15,3},
 			{"coin",false,12,16,3},
-			{"coin",false,13,10,3},
-			{"coin",false,13,11,3},
-			{"coin",false,13,12,3},
+			{"coin",false,12,17,3},
+			-- {"coin",false,12,18,3},
+			-- {"coin",false,13,12,3},
 			{"coin",false,13,13,3},
-			{"coin",false,13,14,3},
-			{"coin",false,13,15,3},
+			-- {"coin",false,13,14,3},
+			-- {"coin",false,13,15,3},
 			{"coin",false,13,16,3},
-
-			{"shrub",true,9,13,3},
-			{"shrub",true,9,14,3},
-			{"shrub",true,10,13,3},
-			{"shrub",true,10,14,3},
-
-			{"turret",true,18,14,1},
-			{"turret",true,10,17,4}
+			{"coin",false,13,17,3},
+			-- {"coin",false,13,18,3},
+			{"shrub",true,9,15,3},
+			{"shrub",true,9,16,3},
+			{"shrub",true,10,15,3},
+			{"shrub",true,10,16,3},
+			{"shrub",true,17,19,3},
+			{"shrub",true,1,17,3},
+			{"shrub",true,1,18,3},
+			{"shrub",true,2,18,3},
+			{"shrub",true,3,18,3},
+			{"turret",true,18,16,1},
+			{"turret",true,10,20,4}
 			-- {"turret",true,15,8,2},
 			-- {"turret",true,9,29,4},
 			-- {"turret",true,13,19,1}
@@ -823,20 +877,25 @@ levels={
 			["o"]={65,false}
 		},
 		["tile_map"]={
-			"              {..    ",
-			"....====......[..    ",
-			"....(  )......[..    ",
-			"....    oo....[..    ",
-			"....    oo....[....  ",
-			"##..====......[....  ",
-			"**##(  )#.....[####  ",
-			"  **    *..........  ",
-			"         ####=#####  ",
-			"         ****=*****  ",
+			"         =           ",
+			"         =           ",
+			"         =           ",
+			"         =    {.o    ",
+			"ooo.====......[..    ",
+			"o...(  )......[..    ",
+			"....    oo....[..====",
+			"....    oo....[..()()",
+			"##..====......[....} ",
+			"**##(  )#.....[####] ",
+			"  **    *........... ",
+			"         ####=###### ",
+			"         ****=****** ",
 			"             =       ",
 			"             =       ",
 			"       =======       ",
 			"       =()()()       ",
+			"       =             ",
+			"       =             ",
 			"       =             ",
 			"       =             ",
 			"       =             "
