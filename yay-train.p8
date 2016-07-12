@@ -1,71 +1,72 @@
 pico-8 cartridge // http://www.pico-8.com
 version 8
 __lua__
+--[[
+NOTES
+coordinates:
+	    +z +y
+	     ^ ^
+	     |/
+	-x<-- -->+x
+	    /|
+	   v v
+	 -y -z
+directions:
+	1=facing left, showing sides (-x)
+	2=facing right, showing sides (+x)
+	3=facing up, showing back (+z)
+	4=facing down, showing front (-z)
+positions:
+	entity.x is the left side of the entity (left < right)
+	entity.x+entity.width-1 is the right side of the entity
+	entity.z is the bottom of the entity (bottom < top)
+	entity.z+entity.depth-1 is the top of the entity
+	entity.y is the height above (or below) the ground
+tiles:
+	col=1 goes from x=0 to x=5
+		col=flr((x+width/2)/tile_size+1)
+		x=tile_size*(col-1)
+	row=1 goes from z=0 to z=5
+		row=flr(z/tile_size)+1
+		z=tile_size*(row-1)
+]]
+
+
+-- VARS
 -- constants
-debug_frame_rate_slowdown=1 -- 1 = no slowdown
-render=true
+tile_size=6
+anim_mult=5
+debug_frame_skip=1 --1 means no skips
+min_tile_row_lead=2
+max_tile_row_lead=8
+entity_spawn_row_lead=0
+opposite_dirs={2,1,4,3}
+-- system vars
+actual_frame=0
+is_paused=false
+is_drawing=true
 draw_debug_shapes=false
 draw_sprites=true
-tile_size=6
-camera_pan_freq=12
-min_row_lead=2
-max_row_lead=8
-entity_spawn_row_lead=0
-animation_frame_mult=5
-opposite_dirs={2,1,4,3}
-
-
+-- game vars
+game_frame=0
+camera_pan_z=0
 -- input vars
+held_dir=0
 pressed_dir=0
 prev_btns={}
-curr_move_is_press=false
-prev_player_x=nil
-prev_player_z=nil
-
-
--- game vars
-actual_frame=0
-is_running=true
-game_frame=0
+-- level vars
 level=nil
-player_entity=nil
-tiles={}
-new_entities={}
-entities={}
-effects={}
-min_row=nil
-max_row=nil
+top_row=nil
+bottom_row=nil
 prev_loaded_entity_row=0
-camera_pan_z=0
+-- game objects
+player_entity=nil
+entities={}
+spawned_entities={}
+tiles={}
 
 
--- init
-function reset()
-	-- input vars
-	pressed_dir=0
-	local i
-	for i=1,4 do
-		prev_btns[i]=btn(i-1)
-	end
-	curr_move_is_press=false
-	prev_player_x=nil
-	prev_player_z=nil
-
-	-- game vars
-	is_running=true
-	game_frame=0
-	level=nil
-	player_entity=nil
-	tiles={}
-	new_entities={}
-	entities={}
-	effects={}
-	min_row=nil
-	max_row=nil
-	prev_loaded_entity_row=0
-	camera_pan_z=0
-end
-
+-- INIT
 function load_level(l)
 	level=levels[l]
 
@@ -78,71 +79,26 @@ function load_level(l)
 	--create player entities
 	local col=level.player_spawn[1]
 	local row=level.player_spawn[2]
-	local num_cars=level.player_spawn[3]
-	local prev_car=spawn_entity_at_tile("train_caboose",true,col,row-1-num_cars,3)
-	-- local i
-	for i=num_cars,1,-1 do
-		local temp=spawn_entity_at_tile("train_car",true,col,row-i,3)
-		temp.follower=prev_car
-		prev_car=temp
-	end
-	player_entity=spawn_entity_at_tile("train_engine",true,col,row,3)
-	player_entity.follower=prev_car
+	-- local num_cars=level.player_spawn[3]
+	-- local prev_car=spawn_entity_at_tile("train_caboose",true,col,row-1-num_cars,3)
+	-- -- local i
+	-- for i=num_cars,1,-1 do
+	-- 	local temp=spawn_entity_at_tile("train_car",true,col,row-i,3)
+	-- 	temp.follower=prev_car
+	-- 	prev_car=temp
+	-- end
+	player_entity=spawn_entity_at_tile("train_engine",col,row,3,{})
+	-- player_entity.follower=prev_car
 
 	-- add entities to scene
-	add_all(entities,new_entities)
-	new_entities={}
-end
-
-function check_for_tile_load()
-	-- figure out which rows the user can see
-	local min_viewable_row=flr(camera_pan_z/tile_size)+1
-	local max_viewable_row=flr((camera_pan_z+128)/tile_size)+1
-
-	-- figure out if we need to load more rows
-	if min_row==nil or max_row==nil or (max_row<max_viewable_row+min_row_lead and max_row<#level.tile_map) then
-		min_row=max(1,min_viewable_row)
-		max_row=max(1,min(#level.tile_map,max_viewable_row+max_row_lead))
-		load_level_tiles()
-	end
-end
-
-function load_level_tiles()
-	-- load the tile rows, reusing any we can use
-	local tiles_temp={}
-	for r=min_row,max_row do
-		if tiles[r] then
-			tiles_temp[r]=tiles[r]
-		else
-			tiles_temp[r]=load_level_tile_row(r)
-		end
-	end
-	tiles=tiles_temp
-end
-
-function load_level_tile_row(r)
-	local row_tiles={}
-	local data_row=#level.tile_map-r+1
-	for c=1,#level.tile_map[data_row] do
-		local s=sub(level.tile_map[data_row],c,c)
-		if s==" " then
-			row_tiles[c]=false
-		else
-			row_tiles[c]={
-				["col"]=c,
-				["row"]=r,
-				["frame"]=level.tile_library[s][1],
-				["flipped"]=level.tile_library[s][2]
-			}
-		end
-	end
-	return row_tiles
+	add_all(entities,spawned_entities)
+	spawned_entities={}
 end
 
 function check_for_entity_load()
-	local max_viewable_row=flr((camera_pan_z+128)/tile_size)+1
+	local max_view_row=flr((camera_pan_z+128)/tile_size)+1
 	local first_row=prev_loaded_entity_row+1
-	local last_row=max_viewable_row+entity_spawn_row_lead
+	local last_row=max_view_row+entity_spawn_row_lead
 	if last_row>0 and first_row<=last_row then
 		local r
 		for r=first_row,last_row do
@@ -156,131 +112,172 @@ function load_entity_row(r)
 	local i
 	for i=1,#level.entity_list do
 		local type=level.entity_list[i][1]
-		local is_grounded=level.entity_list[i][2]
-		local col=level.entity_list[i][3]
-		local row=level.entity_list[i][4]
-		local facing_dir=level.entity_list[i][5]
+		local col=level.entity_list[i][2]
+		local row=level.entity_list[i][3]
+		local facing=level.entity_list[i][4]
+		local init_args=level.entity_list[i][4] or {}
 		if row==r then
-			-- we have an entity to spawn
-			spawn_entity_at_tile(type,is_grounded,col,row,facing_dir)
+			spawn_entity_at_tile(type,col,row,facing,init_args)
 		end
 	end
 end
 
-function spawn_entity_at_pos(type,x,z,facing_dir)
-	local entity=instantiate_entity(type)
-	entity.x=x
-	entity.z=z
-	entity.facing_dir=facing_dir
-	add(new_entities,entity)
-	return entity
+function check_for_tile_load()
+	-- figure out which rows the user can see
+	local min_view_row=flr(camera_pan_z/tile_size)+1
+	local max_view_row=flr((camera_pan_z+128)/tile_size)+1
+
+	-- figure out if we need to load more rows
+	if bottom_row==nil or top_row==nil or (top_row<max_view_row+min_tile_row_lead and top_row<#level.tile_map) then
+		bottom_row=max(1,min_view_row)
+		top_row=max(1,min(#level.tile_map,max_view_row+max_tile_row_lead))
+		load_tiles()
+	end
 end
 
-function spawn_entity_at_tile(type,is_grounded,col,row,facing_dir)
-	local entity=instantiate_entity(type)
-	entity.x=col*tile_size
-	entity.z=row*tile_size
-	entity.facing_dir=facing_dir
-	if is_grounded then
-		entity.col=col
-		entity.row=row
-		entity.is_grounded=true
+function load_tiles()
+	-- load the tile rows, reusing any we can use
+	local temp={}
+	for r=bottom_row,top_row do
+		if tiles[r] then
+			temp[r]=tiles[r]
+		else
+			temp[r]=load_tile_row(r)
+		end
 	end
-	add(new_entities,entity)
-	return entity
+	tiles=temp
+end
+
+function load_tile_row(r)
+	local tile_row={}
+	local data_row=#level.tile_map-r+1
+	for c=1,#level.tile_map[data_row] do
+		local s=sub(level.tile_map[data_row],c,c)
+		if s==" " then
+			tile_row[c]=false
+		else
+			tile_row[c]={
+				["col"]=c,
+				["row"]=r,
+				["frames"]=level.tile_library[s][1],
+				["flipped"]=level.tile_library[s][2]
+			}
+		end
+	end
+	return tile_row
 end
 
 function instantiate_entity(type)
-	local entity_def=entities_library[type]
+	local def=entity_library[type]
 	local entity={
+		-- entity properties
 		["type"]=type,
+		["width"]=def.width,
+		["depth"]=def.depth,
+		["has_grid_movement"]=def.has_grid_movement or false,
+		["hit_channel"]=def.hit_channel,
+		["hittable_by"]=def.hittable_by,
+		["animation"]={},
+		-- methods
+		["init"]=def.init or noop,
+		["pre_move_update"]=def.pre_move_update or noop,
+		["update"]=def.update or noop,
+		["on_hit"]=def.on_hit or noop,
+		["on_hit_by"]=def.on_hit_by or noop,
+		-- stateful fields
 		["x"]=0,
 		["y"]=0,
 		["z"]=0,
-		["col"]=nil,
-		["row"]=nil,
-		["width"]=entity_def.width,
-		["depth"]=entity_def.depth,
-		["facing_dir"]=4,
-		["action"]="default",
-		["frames_alive"]=0,
-		["frames_in_action"]=0,
-		["is_mobile_grounded"]=entity_def.is_mobile_grounded,
-		["is_mobile_airborne"]=entity_def.is_mobile_airborne,
-		["is_grounded"]=false,
+		["vx"]=0,
+		["vy"]=0,
+		["vz"]=0,
+		["col"]=0,
+		["row"]=0,
+		["facing"]=1,
+		["is_on_grid"]=false,
 		["is_alive"]=true,
-		["animation"]={},
-		["can_shoot"]=entity_def.can_shoot,
-		["hit_channel"]=entity_def.hit_channel,
-		["hittable_by"]=entity_def.hittable_by,
 		["has_hitbox"]=true,
 		["has_hurtbox"]=true,
-		["frames_to_death"]=0,
+		["action"]="default",
+		["action_frames"]=0,
 		["wiggle_frames"]=0,
-		["follower"]=nil
+		["frames_alive"]=0,
+		["frames_to_death"]=0
 	}
-	if entity_def.is_mobile_grounded then
-		entity.grounded_move_dir=0
-		entity.grounded_move_frames_left=0
-		entity.grounded_update_frame=entity_def.grounded_update_frame
-		entity.grounded_move_pattern=entity_def.grounded_move_pattern
+	-- some additional props for grid-moving entities
+	if entity.has_grid_movement then
+		entity.grid_move_pattern=def.grid_move_pattern
+		entity.tile_update_frame=def.tile_update_frame --1 = at very end, #pattern = at very start
+		-- stateful fields
+		entity.move_dir=0
+		entity.move_frames_left=0
 	end
-	if entity_def.is_mobile_airborne then
-		entity.airborne_gravity=entity_def.airborne_gravity
-		entity.airborne_vx=0
-		entity.airborne_vy=0
-		entity.airborne_vz=0
-	end
-	-- unpack each action's animation
+	-- unpack animations for each action
 	local action
 	local anim
-	for action,anim in pairs(entity_def.animation) do
-		entity.animation[action]={}
-		if anim["sides"] and anim["back"] and anim["front"] then
-			entity.animation[action][1]=anim["sides"]
-			entity.animation[action][2]=anim["sides"]
-			entity.animation[action][3]=anim["back"]
-			entity.animation[action][4]=anim["front"]
-		else
-			entity.animation[action][1]=anim
-			entity.animation[action][2]=anim
-			entity.animation[action][3]=anim
-			entity.animation[action][4]=anim
-		end
+	for action,anim in pairs(def.animation) do
+		entity.animation[action]={
+			anim["sides"] or anim,
+			anim["sides"] or anim,
+			anim["back"] or anim,
+			anim["front"] or anim
+		}
 	end
-	-- configure shooting
-	if entity_def.can_shoot then
-		entity.bullet_type=entity_def.bullet_type
-		entity.bullet_speed=entity_def.bullet_speed
-		entity.frames_to_shot=0
-		entity.frames_between_shots=entity_def.frames_between_shots
-		entity.shoot_frame=entity_def.shoot_frame
-	end
+	-- return the entity
 	return entity
 end
 
-function spawn_effect()
-	local effect={
-		["is_alive"]=true
-	}
-	add(effects,effect)
-	return effect
+function spawn_entity_at_tile(type,col,row,facing,init_args)
+	local entity=instantiate_entity(type)
+	entity.x=tile_size*(col-1)+(tile_size-entity.width)/2
+	entity.z=tile_size*(row-1)+(tile_size-entity.depth)/2
+	entity.col=col
+	entity.row=row
+	entity.facing=facing or 4
+	entity.is_on_grid=true
+	entity.init(entity,init_args)
+	add(spawned_entities,entity)
+	return entity
+end
+
+function spawn_entity_at_pos(type,x,z,facing,init_args)
+	local entity=instantiate_entity(type)
+	entity.x=x
+	entity.z=z
+	entity.col=flr((entity.x+entity.width/2)/tile_size+1)
+	entity.row=flr(entity.z/tile_size)+1
+	entity.facing=facing or 4
+	entity.is_on_grid=false
+	entity.init(entity,init_args)
+	add(spawned_entities,entity)
+	return entity
+end
+
+function spawn_entity_centered_at_pos(type,x,z,facing,init_args)
+	local entity=instantiate_entity(type)
+	entity.x=x-entity.width/2
+	entity.z=z-entity.depth/2
+	entity.col=flr((entity.x+entity.width/2)/tile_size+1)
+	entity.row=flr(entity.z/tile_size)+1
+	entity.facing=facing or 4
+	entity.is_on_grid=false
+	entity.init(entity,init_args)
+	add(spawned_entities,entity)
+	return entity
 end
 
 function _init()
-	reset()
 	load_level(1)
 end
 
 
--- update
+-- UPDATE
 function update_entity(entity)
 	-- update timers
 	entity.frames_alive+=1
-	entity.frames_in_action+=1
-	if entity.frames_in_action>animation_frame_mult*#entity.animation[entity.action][entity.facing_dir] and entity.action!="default" then
-		entity.action="default"
-		entity.frames_in_action=0
+	entity.action_frames+=1
+	if entity.action!="default" and entity.action_frames>anim_mult*#entity.animation[entity.action][entity.facing] then
+		set_entity_action(entity,"default")
 	end
 	if entity.frames_to_death>0 then
 		entity.frames_to_death-=1
@@ -292,107 +289,66 @@ function update_entity(entity)
 	if entity.wiggle_frames>0 then
 		entity.wiggle_frames-=1
 	end
-	-- move
-	if entity.is_grounded then
-		if entity.is_mobile_grounded and entity.grounded_move_frames_left>0 then
-			local col=entity.col
-			local row=entity.row
-			local dist=entity.grounded_move_pattern[entity.grounded_move_frames_left]
-			-- moving left
-			if entity.grounded_move_dir==1 then
-				entity.x-=dist
-				col-=1
-			-- moving right
-			elseif entity.grounded_move_dir==2 then
-				entity.x+=dist
-				col+=1
-			-- moving up
-			elseif entity.grounded_move_dir==3 then
-				entity.z+=dist
-				row+=1
-			-- moving down
-			elseif entity.grounded_move_dir==4 then
-				entity.z-=dist
-				row-=1
+
+	-- the entity may want to adjust its velocity
+	entity.pre_move_update(entity)
+
+	-- entities on the grid have special movement logic
+	if entity.is_on_grid and entity.has_grid_movement then
+		entity.vx=0
+		entity.vz=0
+		if entity.move_frames_left>0 then
+			local dist=entity.grid_move_pattern[entity.move_frames_left]
+			local dx
+			local dz
+			dx,dz=dir_to_vec(entity.move_dir)
+			entity.vx+=dx*dist
+			entity.vz+=dz*dist
+			if entity.move_frames_left==entity.tile_update_frame then
+				entity.col+=dx
+				entity.row+=dz
 			end
-			if entity.grounded_move_frames_left==entity.grounded_update_frame then
-				entity.col=col
-				entity.row=row
-			end
-			entity.grounded_move_frames_left-=1
-		end
-	elseif entity.is_mobile_airborne then
-		entity.airborne_vy-=entity.airborne_gravity
-		entity.x+=entity.airborne_vx
-		entity.y+=entity.airborne_vy
-		entity.z+=entity.airborne_vz
-		if entity.y<=0 then
-			entity.y=0
-			entity.airborne_vy=0
+			entity.move_frames_left-=1
 		end
 	end
-	-- shoot projectiles
-	if entity.can_shoot then
-		if entity.frames_to_shot>0 then
-			entity.frames_to_shot-=1
-		end
-		if entity.action=="shooting" and entity.frames_in_action==entity.shoot_frame then
-			fire_projectile(entity)
-		end
+
+	-- move entity
+	entity.x+=entity.vx
+	entity.y+=entity.vy
+	entity.z+=entity.vz
+
+	-- update the tile's col and row
+	if not entity.is_on_grid then
+		entity.col=flr((entity.x+entity.width/2)/tile_size+1)
+		entity.row=flr(entity.z/tile_size)+1
 	end
-	-- entity-specific code
-	if entity.type=="turret" then
-		if entity.frames_to_shot<=0 and entity.action=="default" and game_frame%entity.frames_between_shots==0 then
-			shoot_entity(entity)
-		end
-	elseif entity.type=="train_engine" then
-		if entity.frames_to_shot<=0 and btn(4) then
-			shoot_entity(entity)
-		end
-		-- if entity.frames_in_action%6==0 then
-		-- 	local poof=spawn_entity_at_pos("poof",entity.x,entity.z,3)
-		-- 	poof.y=6
-		-- 	poof.airborne_vy=1
-		-- 	poof.action="poofed"
-		-- 	poof.frames_in_action=0
-		-- 	poof.frames_to_death=animation_frame_mult*#poof.animation[poof.action][poof.facing_dir]
-		-- end
-	end
+
+	-- the entity might want to do some revisions post-move
+	entity.update(entity)
 end
 
-function shoot_entity(entity)
-	if entity.animation.shooting then
-		entity.action="shooting"
-		entity.frames_in_action=0
-	else
-		fire_projectile(entity)
-	end
-	entity.frames_to_shot=entity.frames_between_shots
+function move_entity_on_grid(entity,dir)
+	entity.move_frames_left=#entity.grid_move_pattern
+	entity.move_dir=dir
+	entity.facing=dir
 end
 
-function fire_projectile(entity)
-	local bullet=spawn_entity_at_pos(entity.bullet_type,entity.x+1,entity.z-1,entity.facing_dir)
-	-- moving left
-	if entity.facing_dir==1 then
-		bullet.airborne_vx=-entity.bullet_speed
-	-- moving right
-	elseif entity.facing_dir==2 then
-		bullet.airborne_vx=entity.bullet_speed
-	-- moving up
-	elseif entity.facing_dir==3 then
-		bullet.airborne_vz=entity.bullet_speed
-	-- moving down
-	elseif entity.facing_dir==4 then
-		bullet.airborne_vz=-entity.bullet_speed
-	end
+function is_entity_moving_on_grid(entity)
+	return entity.move_frames_left>0
 end
 
-function update_effect(effect)
+function set_entity_action(entity,action)
+	entity.action=action
+	entity.action_frames=0
+end
+
+function is_alive(x)
+	return x["is_alive"]
 end
 
 function check_for_collision(entity1,entity2)
 	local are_overlapping=false
-	if entity1.is_grounded and entity2.is_grounded then
+	if entity1.is_on_grid and entity2.is_on_grid then
 		if entity1.col==entity2.col and entity1.row==entity2.row then
 			are_overlapping=true
 		end
@@ -400,77 +356,45 @@ function check_for_collision(entity1,entity2)
 		are_overlapping=true
 	end
 	if are_overlapping then
-		local entity1_is_hit=false
-		if entity2.has_hitbox and entity1.has_hurtbox and list_has_value(entity1.hittable_by,entity2.hit_channel) then
-			-- entity2 hit entity1
-			entity1_is_hit=true
+		local entity1_is_hit=(entity2.has_hitbox and entity1.has_hurtbox and list_has_value(entity1.hittable_by,entity2.hit_channel))
+		local entity2_is_hit=(entity1.has_hitbox and entity2.has_hurtbox and list_has_value(entity2.hittable_by,entity1.hit_channel))
+		if entity1_is_hit then
+			entity2.on_hit(entity2,entity1)
 		end
-		if entity1.has_hitbox and entity2.has_hurtbox and list_has_value(entity2.hittable_by,entity1.hit_channel) then
-			-- entity1 hit entity2
-			on_hit(entity1,entity2)
+		if entity2_is_hit then
+			entity1.on_hit(entity1,entity2)
+			entity2.on_hit_by(entity2,entity1)
 		end
 		if entity1_is_hit then
-			on_hit(entity2,entity1)
+			entity1.on_hit_by(entity1,entity2)
 		end
-	end
-end
-
-function on_hit(hitter,hittee)
-	if hittee.type=="coin" then
-		hittee.airborne_vy=1.5
-		destroy_entity(hittee)
-	elseif hittee.type=="shrub" then
-		destroy_entity(hittee)
-	elseif hittee.type=="enemy_bullet" or hittee.type=="player_bullet" then
-		destroy_entity(hittee)
-	elseif hittee.type=="turret" then
-		hittee.wiggle_frames=5
-		destroy_entity(hittee)
-	end
-end
-
-function destroy_entity(entity)
-	entity.has_hurtbox=false
-	entity.has_hitbox=false
-	if entity.animation.destroyed then
-		entity.action="destroyed"
-		entity.frames_in_action=0
-		entity.frames_to_death=animation_frame_mult*#entity.animation[entity.action][entity.facing_dir]
-	else
-		entity.is_alive=false
-	end
-end
-
-function move_entity(entity,dir)
-	local prev_dir=entity.facing_dir
-	entity.grounded_move_dir=dir
-	entity.facing_dir=dir
-	entity.grounded_move_frames_left=#entity.grounded_move_pattern
-	if entity.follower!=nil then
-		move_entity(entity.follower,prev_dir)
 	end
 end
 
 function kill_if_out_of_bounds(entity)
-	if min_row!=nil and entity.z<=min_row*tile_size then
+	local left=tile_size*(entity.col-1)
+	local right=left+tile_size-1
+	local bottom=tile_size*(entity.row-1)
+	local top=bottom+tile_size-1
+	if right<0 or left>128 or top<camera_pan_z then
 		entity.is_alive=false
 	end
 end
 
 function _update()
-	-- sometimes we don't run the code
+	-- simulation will not update while paused
 	actual_frame+=1
-	if actual_frame%debug_frame_rate_slowdown!=0 or not is_running then
+	if actual_frame%debug_frame_skip!=0 or is_paused then
 		return
 	end
 
 	-- handle inputs
+	held_dir=0
 	local curr_btns={}
-	local held_dir=0
 	local i
 	for i=1,4 do
 		curr_btns[i]=btn(i-1)
-		if curr_btns[i] and player_entity!=nil and i!=player_entity.grounded_move_dir and i!=opposite_dirs[player_entity.grounded_move_dir] then
+		if curr_btns[i] and player_entity!=nil and i!=player_entity.move_dir and i!=opposite_dirs[player_entity.move_dir] then
 			held_dir=i
 			if not prev_btns[i] and pressed_dir==0 then
 				pressed_dir=i
@@ -478,34 +402,12 @@ function _update()
 		end
 	end
 
-	-- move the player
-	if player_entity!=nil and player_entity.grounded_move_frames_left<=0 then
-		local dir=player_entity.facing_dir
-		if pressed_dir!=0 then
-			dir=pressed_dir
-			pressed_dir=0
-		elseif held_dir!=0 then
-			dir=held_dir
-		end
-		move_entity(player_entity,dir)
-	end
-
-	-- pan the camera
-	if game_frame%camera_pan_freq==0 then
-		camera_pan_z+=1
-	end
-
-	-- load more of the level if we have to
-	check_for_tile_load()
-	check_for_entity_load()
-
-	-- update entities/effects
+	-- update entities
 	foreach(entities,update_entity)
-	foreach(effects,update_effect)
 
 	-- add new entities to the game
-	add_all(entities,new_entities)
-	new_entities={}
+	add_all(entities,spawned_entities)
+	spawned_entities={}
 
 	-- check for collisions
 	for i=1,#entities do
@@ -520,65 +422,102 @@ function _update()
 
 	-- cull dead entities/effects
 	entities=filter_list(entities,is_alive)
-	effects=filter_list(effects,is_alive)
 
 	game_frame+=1
 end
 
 
--- draw
-function draw_tile(tile)
-	local x=tile.col*tile_size
-	local y=-tile.row*tile_size
-	if draw_debug_shapes then
-		rectfill(x,y,x+tile_size-1,y+tile_size-1,3)
-	end
-	if draw_sprites then
-		spr(tile.frame,x-1,y-2,1,1,tile.flipped,false)
-	end
-end
-
+-- DRAW
 function draw_entity(entity)
-	local x=entity.x
-	local y=-entity.y-entity.z
-	if draw_sprites then
-		local f = entity.frames_in_action
-		if entity.action=="default" then
-			f = game_frame
-		end
-		local frames=entity.animation[entity.action][entity.facing_dir]
-		local frame=frames[flr(f/animation_frame_mult)%#frames+1]
-		local flipped=false
-		if entity.facing_dir==1 then
-			flipped=true
-		end
-		local wiggle=0
-		if entity.wiggle_frames>0 then
-			wiggle=2*(game_frame%2)-1
-		end
-		spr(frame,x+entity.width/2-4+wiggle,y-2,1,1,flipped,false)
-	end
+	-- outline tile the entity is on
 	if draw_debug_shapes then
-		rect(x,y,x+entity.width-1,y+entity.depth-1,14)
+		local left=tile_size*(entity.col-1)
+		local right=left+tile_size-1
+		local bottom=tile_size*(entity.row-1)
+		local top=bottom+tile_size-1
+		rect(left,-top,right,-bottom,12)
+		pset(left,-bottom,7)
+	end
+	-- draw sprite
+	do
+		local left=entity.x
+		local right=left+entity.width-1
+		local bottom=entity.z+entity.y
+		local top=bottom+entity.depth-1
+		if draw_sprites then
+			local f = entity.action_frames
+			if entity.action=="default" then
+				f = game_frame
+			end
+			local anim=entity.animation[entity.action][entity.facing]
+			local frame=anim[flr(f/anim_mult)%#anim+1]
+			local flipped=(entity.facing==1)
+			local wiggle=0
+			if entity.wiggle_frames>0 then
+				wiggle=2*(game_frame%2)-1
+			end
+			spr(frame,left+wiggle-4+entity.width/2,-top+entity.depth/2-5,1,1,flipped,false)
+		end
+		-- draw hitbox
+		if draw_debug_shapes then
+			rect(left,-top,right,-bottom,10)
+			pset(left,-bottom,7)
+		end
 	end
 end
 
-function draw_effect(effect)
+function draw_tile(tile)
+	local left=tile_size*(tile.col-1)
+	local right=left+tile_size-1
+	local bottom=tile_size*(tile.row-1)
+	local top=bottom+tile_size-1
+	local f=flr(game_frame/anim_mult)%#tile.frames+1
+	if draw_debug_shapes then
+		if not fget(tile.frames[f],0) then
+			rectfill(left,-top,right,-bottom,5)
+		elseif (tile.col+tile.row)%2==0 then
+			rectfill(left,-top,right,-bottom,6)
+		else
+			rectfill(left,-top,right,-bottom,13)
+		end
+	end
+	if draw_sprites then
+		spr(tile.frames[f],left-1,-top-2,1,1,tile.flipped,false)
+	end
+end
+
+function is_rendered_on_top(a,b)
+	if a.z<b.z then
+		return true
+	elseif a.z>b.z then
+		return false
+	elseif a.y>b.y then
+		return true
+	elseif a.y<b.y then
+		return false
+	elseif a.x<b.x then
+		return true
+	end
+	return false
 end
 
 function _draw()
-	if not render then
+	if not is_drawing then
 		return
 	end
 
 	-- reset background
 	camera()
-	rectfill(0,0,127,127,0)
-	camera(5,-128-camera_pan_z)
+	if draw_debug_shapes then
+		rectfill(0,0,127,127,1)
+	else
+		rectfill(0,0,127,127,0)
+	end
+	camera(0,-127)
 
 	-- draw tiles
 	local r
-	for r=max_row,min_row,-1 do
+	for r=top_row,bottom_row,-1 do
 		local c
 		for c=1,#tiles[r] do
 			if tiles[r][c] then
@@ -590,13 +529,14 @@ function _draw()
 	-- sort entities so that they are properly layered
 	sort_list(entities,is_rendered_on_top)
 
-	-- draw entities/effects
+	-- draw entities
 	foreach(entities,draw_entity)
-	foreach(effects,draw_effect)
 end
 
 
--- helper methods
+-- HELPER METHODS
+function noop() end
+
 function list_has_value(list,val)
 	local _
 	local v
@@ -630,36 +570,6 @@ function filter_list(list,func)
 	return l
 end
 
-function is_alive(obj)
-	return obj["is_alive"]
-end
-
-function is_rendered_on_top(a,b)
-	if a.z<b.z then
-		return true
-	elseif a.z>b.z then
-		return false
-	elseif a.y>b.y then
-		return true
-	elseif a.y<b.y then
-		return false
-	elseif a.x<b.x then
-		return true
-	end
-	return false
-end
-
-function entities_are_overlapping(a,b)
-	return rects_are_overlapping(a.x,-a.z,a.x+a.width-1,-a.z+a.depth-1,b.x,-b.z,b.x+b.width-1,-b.z+b.depth-1)
-end
-
-function rects_are_overlapping(x1,y1,x2,y2,x3,y3,x4,y4)
-	if x2 < x3 or x4 < x1 or y2 < y3 or y4 < y1 then
-		return false
-	end
-	return true
-end
-
 function add_all(list,list2)
 	local i
 	for i=1,#list2 do
@@ -668,60 +578,104 @@ function add_all(list,list2)
 	return list
 end
 
+function dir_to_vec(dir)
+	if dir==1 then
+		return -1,0
+	elseif dir==2 then
+		return 1,0
+	elseif dir==3 then
+		return 0,1
+	elseif dir==4 then
+		return 0,-1
+	else
+		return 0,0
+	end
+end
 
--- level data
-entities_library={
+function entities_are_overlapping(a,b)
+	local a_left=a.x
+	local a_right=a_left+a.width-1
+	local a_bottom=a.z+a.y
+	local a_top=a_bottom+a.depth-1
+	local b_left=b.x
+	local b_right=b_left+b.width-1
+	local b_bottom=b.z+b.y
+	local b_top=b_bottom+b.depth-1
+	return rects_are_overlapping(a_left,a_bottom,a_right,a_top,b_left,b_bottom,b_right,b_top)
+end
+
+function rects_are_overlapping(x1,y1,x2,y2,x3,y3,x4,y4)
+	-- assumes x1 < x2, y1 < y2, x3 < x4, y3 < y4
+	if x2 < x3 or x4 < x1 or y2 < y3 or y4 < y1 then
+		return false
+	end
+	return true
+end
+
+
+-- DATA
+entity_library={
 	["train_engine"]={
 		["width"]=6,
 		["depth"]=6,
-		["is_mobile_grounded"]=true,
-		["grounded_update_frame"]=2,
-		["grounded_move_pattern"]={1,1,1,1,1,1},
-		["is_mobile_airborne"]=false,
+		["hit_channel"]="player",
+		["hittable_by"]={},
 		["animation"]={
 			["default"]={["front"]={2},["back"]={3},["sides"]={1}}
 		},
-		["can_shoot"]=true,
-		["frames_between_shots"]=20,
-		["shoot_frame"]=nil,
-		["bullet_type"]="player_bullet",
-		["bullet_speed"]=3,
-		["hit_channel"]="player",
-		["hittable_by"]={}
+		["has_grid_movement"]=true,
+		["grid_move_pattern"]={1,1,1,1,1,1},
+		["tile_update_frame"]=2,
+		["init"]=function(entity,args)
+		end,
+		["pre_move_update"]=function(entity)
+			if entity.move_frames_left<=0 then
+				local dir=entity.facing
+				if pressed_dir!=0 then
+					dir=pressed_dir
+					pressed_dir=0
+				elseif held_dir!=0 then
+					dir=held_dir
+				end
+				move_entity_on_grid(entity,dir)
+			end
+		end,
+		["update"]=function(entity)
+		end
 	},
-	["train_car"]={
+	["shrub"]={
 		["width"]=6,
 		["depth"]=6,
-		["is_mobile_grounded"]=true,
-		["grounded_update_frame"]=2,
-		["grounded_move_pattern"]={1,1,1,1,1,1},
-		["is_mobile_airborne"]=false,
+		["hit_channel"]="debris",
+		["hittable_by"]={"enemy_projectile"},
 		["animation"]={
-			["default"]={["front"]={5},["back"]={5},["sides"]={4}}
+			["default"]={69}
 		},
-		["can_shoot"]=false,
-		["hit_channel"]="player",
-		["hittable_by"]={}
+		["on_hit_by"]=function(entity,hitter)
+			entity.is_alive=false
+			entity.has_hurtbox=false
+			entity.has_hitbox=false
+		end
 	},
-	["train_caboose"]={
-		["width"]=6,
-		["depth"]=6,
-		["is_mobile_grounded"]=true,
-		["grounded_update_frame"]=2,
-		["grounded_move_pattern"]={1,1,1,1,1,1},
-		["is_mobile_airborne"]=false,
+	["coin"]={
+		["width"]=4,
+		["depth"]=4,
+		["hit_channel"]="pickup",
+		["hittable_by"]={"player"},
 		["animation"]={
-			["default"]={["front"]={7},["back"]={8},["sides"]={6}}
+			["default"]={32,33,34,35}
 		},
-		["can_shoot"]=false,
-		["hit_channel"]="player",
-		["hittable_by"]={}
+		["on_hit_by"]=function(entity,hitter)
+			entity.is_alive=false
+			entity.has_hurtbox=false
+			entity.has_hitbox=false
+		end
 	},
 	["turret"]={
 		["width"]=6,
 		["depth"]=6,
-		["is_mobile_grounded"]=false,
-		["is_mobile_airborne"]=false,
+		["hit_channel"]="debris",
+		["hittable_by"]={},
 		["animation"]={
 			["default"]={
 				["front"]={22,22,22,23,23,23},
@@ -732,149 +686,100 @@ entities_library={
 				["front"]={22,23,22,23,24,24,24,22},
 				["back"]={38,39,38,39,40,40,40,38},
 				["sides"]={54,55,54,55,56,56,56,54}
-			},
-			["destroyed"]={
-				["front"]={24,24,87,88,89,90},
-				["back"]={40,40,87,88,89,90},
-				["sides"]={56,56,87,88,89,90}
 			}
 		},
-		["can_shoot"]=true,
-		["bullet_type"]="enemy_bullet",
-		["bullet_speed"]=1,
-		["frames_between_shots"]=60,
-		["shoot_frame"]=20,
-		["hit_channel"]="enemy",
-		["hittable_by"]={"player_projectile"}
-	},
-	["player_bullet"]={
-		["width"]=4,
-		["depth"]=4,
-		["is_mobile_grounded"]=false,
-		["is_mobile_airborne"]=true,
-		["airborne_gravity"]=0,
-		["animation"]={
-			["default"]={
-				["front"]={14,13,14,15},
-				["back"]={14,13,14,15},
-				["sides"]={30,29,30,31}
-			}
-		},
-		["can_shoot"]=false,
-		["hit_channel"]="player_projectile",
-		["hittable_by"]={"enemy","solid_debris"}
+		["init"]=function(entity,args)
+			entity.frames_between_shots=60
+			entity.frames_to_shot=entity.frames_between_shots
+			entity.shoot_frame=20
+		end,
+		["pre_move_update"]=function(entity)
+		end,
+		["update"]=function(entity)
+			if entity.frames_to_shot==0 then
+				set_entity_action(entity,"shooting")
+				entity.frames_to_shot=entity.frames_between_shots
+			else
+				entity.frames_to_shot-=1
+			end
+			if entity.action=="shooting" and entity.action_frames==entity.shoot_frame then
+				local vx
+				local vz
+				vx,vz=dir_to_vec(entity.facing)
+				local bullet=spawn_entity_centered_at_pos("enemy_bullet",entity.x+entity.width/2,entity.z+entity.depth/2,entity.facing,{
+					["vx"]=vx,
+					["vz"]=vz
+				})
+			end
+		end
 	},
 	["enemy_bullet"]={
 		["width"]=4,
 		["depth"]=4,
-		["is_mobile_grounded"]=false,
-		["is_mobile_airborne"]=true,
-		["airborne_gravity"]=0,
+		["hit_channel"]="enemy_projectile",
+		["hittable_by"]={},
 		["animation"]={
 			["default"]={27,10}
 		},
-		["can_shoot"]=false,
-		["hit_channel"]="enemy_projectile",
-		["hittable_by"]={"solid_debris"}
+		["init"]=function(entity,args)
+			entity.vx=args.vx
+			entity.vz=args.vz
+		end,
+		["on_hit"]=function(entity,hittee)
+			entity.is_alive=false
+			entity.has_hurtbox=false
+			entity.has_hitbox=false
+		end,
+		["on_hit_by"]=function(entity,hitter)
+			entity.is_alive=false
+			entity.has_hurtbox=false
+			entity.has_hitbox=false
+		end
 	},
-	["coin"]={
-		["width"]=6,
-		["depth"]=6,
-		["is_mobile_grounded"]=false,
-		["is_mobile_airborne"]=true,
-		["airborne_gravity"]=0.1,
-		["animation"]={
-			["default"]={32,33,34,35},
-			["destroyed"]={32,48,49,50}
-		},
-		["can_shoot"]=false,
-		["hit_channel"]="pickup",
-		["hittable_by"]={"player"}
-	},
-	["poof"]={
-		["width"]=6,
-		["depth"]=6,
-		["is_mobile_grounded"]=false,
-		["is_mobile_airborne"]=true,
-		["airborne_gravity"]=0.1,
-		["animation"]={
-			["default"]={10},
-			["poofed"]={11,10}
-		},
-		["can_shoot"]=false,
-		["hit_channel"]="effect",
-		["hittable_by"]={}
-	},
-	["shrub"]={
-		["width"]=6,
-		["depth"]=6,
-		["is_mobile_grounded"]=false,
-		["is_mobile_airborne"]=false,
-		["animation"]={
-			["default"]={69},
-			["destroyed"]={87,88,89,90}
-		},
-		["can_shoot"]=false,
-		["hit_channel"]="solid_debris",
-		["hittable_by"]={"player_projectile","enemy_projectile"}
-	}
 }
+
 levels={
 	{
 		["player_spawn"]={8,5,2}, --col,row,num_cars
 		["entity_list"]={
-			-- type,is_grounded,col,row,facing_dir
-			{"coin",false,3,15,3},
-			{"coin",false,3,16,3},
-			{"coin",false,3,17,3},
-			-- {"coin",false,11,12,3},
-			{"coin",false,11,13,3},
-			-- {"coin",false,11,14,3},
-			-- {"coin",false,11,15,3},
-			{"coin",false,11,16,3},
-			{"coin",false,11,17,3},
-			-- {"coin",false,11,18,3},
-			-- {"coin",false,12,12,3},
-			{"coin",false,12,13,3},
-			-- {"coin",false,12,14,3},
-			-- {"coin",false,12,15,3},
-			{"coin",false,12,16,3},
-			{"coin",false,12,17,3},
-			-- {"coin",false,12,18,3},
-			-- {"coin",false,13,12,3},
-			{"coin",false,13,13,3},
-			-- {"coin",false,13,14,3},
-			-- {"coin",false,13,15,3},
-			{"coin",false,13,16,3},
-			{"coin",false,13,17,3},
-			-- {"coin",false,13,18,3},
-			{"shrub",true,9,15,3},
-			{"shrub",true,9,16,3},
-			{"shrub",true,10,15,3},
-			{"shrub",true,10,16,3},
-			{"shrub",true,17,19,3},
-			{"shrub",true,1,17,3},
-			{"shrub",true,1,18,3},
-			{"shrub",true,2,18,3},
-			{"shrub",true,3,18,3},
-			{"turret",true,18,16,1},
-			{"turret",true,10,20,4}
-			-- {"turret",true,15,8,2},
-			-- {"turret",true,9,29,4},
-			-- {"turret",true,13,19,1}
+			-- type,col,row,facing_dir
+			{"coin",3,15,3},
+			{"coin",3,16,3},
+			{"coin",3,17,3},
+			{"coin",11,13,3},
+			{"coin",11,16,3},
+			{"coin",11,17,3},
+			{"coin",12,13,3},
+			{"coin",12,16,3},
+			{"coin",12,17,3},
+			{"coin",13,13,3},
+			{"coin",13,16,3},
+			{"coin",13,17,3},
+			{"shrub",9,15,3},
+			{"shrub",9,16,3},
+			{"shrub",10,15,3},
+			{"shrub",10,16,3},
+			{"shrub",17,19,3},
+			{"shrub",1,17,3},
+			{"shrub",1,18,3},
+			{"shrub",2,18,3},
+			{"shrub",3,18,3},
+			{"turret",18,16,1},
+			{"turret",10,20,4}
 		},
 		["tile_library"]={
-			["."]={64,false},
-			["="]={66,false},
-			["("]={82,false},
-			[")"]={82,true},
-			["#"]={80,false},
-			["*"]={96,false},
-			["]"]={97,false},
-			["["]={97,true},
-			["}"]={81,false},
-			["{"]={81,true},
-			["o"]={65,false}
+			-- icon={frames,is_flipped}
+			["."]={{64},false}, -- grass
+			["="]={{66},false}, -- bridge
+			["("]={{82},false}, -- bridge supports
+			[")"]={{82},true}, -- bridge supports
+			["#"]={{80},false}, -- cliff
+			["*"]={{96},false}, -- cliff end
+			["]"]={{97},false}, -- side cliff
+			["["]={{97},true}, -- side cliff
+			["}"]={{81},false}, -- side cliff end
+			["{"]={{81},true}, -- side cliff end
+			["o"]={{65},false} -- tree stump
 		},
 		["tile_map"]={
 			"         =           ",
@@ -1032,7 +937,7 @@ __gfx__
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __gff__
-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __map__
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
