@@ -2,7 +2,7 @@ pico-8 cartridge // http://www.pico-8.com
 version 8
 __lua__
 --[[
-NOTES
+notes
 coordinates:
 	    +z +y
 	     ^ ^
@@ -32,11 +32,11 @@ tiles:
 ]]
 
 
--- VARS
+-- vars
 -- constants
 tile_size=6
 anim_mult=5
-debug_frame_skip=1 --1 means no skips
+frame_skip=1 --1 means no skips
 min_tile_row_lead=2
 max_tile_row_lead=8
 entity_spawn_row_lead=0
@@ -45,10 +45,11 @@ opposite_dirs={2,1,4,3}
 actual_frame=0
 is_paused=false
 is_drawing=true
-draw_debug_shapes=false
 draw_sprites=true
+draw_debug_shapes=false
 -- game vars
 game_frame=0
+freeze_frames=0
 camera_pan_z=0
 -- input vars
 held_dir=0
@@ -63,10 +64,12 @@ prev_loaded_entity_row=0
 player_entity=nil
 entities={}
 spawned_entities={}
+effects={}
 tiles={}
+directives={}
 
 
--- INIT
+-- init
 function load_level(l)
 	level=levels[l]
 
@@ -79,16 +82,13 @@ function load_level(l)
 	--create player entities
 	local col=level.player_spawn[1]
 	local row=level.player_spawn[2]
-	-- local num_cars=level.player_spawn[3]
-	-- local prev_car=spawn_entity_at_tile("train_caboose",true,col,row-1-num_cars,3)
-	-- -- local i
-	-- for i=num_cars,1,-1 do
-	-- 	local temp=spawn_entity_at_tile("train_car",true,col,row-i,3)
-	-- 	temp.follower=prev_car
-	-- 	prev_car=temp
-	-- end
+	local num_cars=level.player_spawn[3]
+	spawn_entity_at_tile("train_caboose",col,row-1-num_cars,3,{})
+	local i
+	for i=num_cars,1,-1 do
+		spawn_entity_at_tile("train_car",col,row-i,3,{})
+	end
 	player_entity=spawn_entity_at_tile("train_engine",col,row,3,{})
-	-- player_entity.follower=prev_car
 
 	-- add entities to scene
 	add_all(entities,spawned_entities)
@@ -160,7 +160,9 @@ function load_tile_row(r)
 				["col"]=c,
 				["row"]=r,
 				["frames"]=level.tile_library[s][1],
-				["flipped"]=level.tile_library[s][2]
+				["flipped"]=level.tile_library[s][2],
+				["is_solid"]=level.tile_library[s][3] or false,
+				["has_wall"]=level.tile_library[s][4] or {false,false,false,false}
 			}
 		end
 	end
@@ -184,6 +186,8 @@ function instantiate_entity(type)
 		["update"]=def.update or noop,
 		["on_hit"]=def.on_hit or noop,
 		["on_hit_by"]=def.on_hit_by or noop,
+		["on_hit_wall"]=def.on_hit_wall or noop,
+		["on_fall_off"]=def.on_fall_off or noop,
 		-- stateful fields
 		["x"]=0,
 		["y"]=0,
@@ -191,10 +195,11 @@ function instantiate_entity(type)
 		["vx"]=0,
 		["vy"]=0,
 		["vz"]=0,
+		["gravity"]=def.gravity or 0,
 		["col"]=0,
 		["row"]=0,
 		["facing"]=1,
-		["is_on_grid"]=false,
+		["is_on_grid"]=def.is_on_grid or false,
 		["is_alive"]=true,
 		["has_hitbox"]=true,
 		["has_hurtbox"]=true,
@@ -202,7 +207,8 @@ function instantiate_entity(type)
 		["action_frames"]=0,
 		["wiggle_frames"]=0,
 		["frames_alive"]=0,
-		["frames_to_death"]=0
+		["frames_to_death"]=0,
+		["death_effect"]=nil
 	}
 	-- some additional props for grid-moving entities
 	if entity.has_grid_movement then
@@ -234,7 +240,6 @@ function spawn_entity_at_tile(type,col,row,facing,init_args)
 	entity.col=col
 	entity.row=row
 	entity.facing=facing or 4
-	entity.is_on_grid=true
 	entity.init(entity,init_args)
 	add(spawned_entities,entity)
 	return entity
@@ -247,7 +252,6 @@ function spawn_entity_at_pos(type,x,z,facing,init_args)
 	entity.col=flr((entity.x+entity.width/2)/tile_size+1)
 	entity.row=flr(entity.z/tile_size)+1
 	entity.facing=facing or 4
-	entity.is_on_grid=false
 	entity.init(entity,init_args)
 	add(spawned_entities,entity)
 	return entity
@@ -260,10 +264,67 @@ function spawn_entity_centered_at_pos(type,x,z,facing,init_args)
 	entity.col=flr((entity.x+entity.width/2)/tile_size+1)
 	entity.row=flr(entity.z/tile_size)+1
 	entity.facing=facing or 4
-	entity.is_on_grid=false
 	entity.init(entity,init_args)
 	add(spawned_entities,entity)
 	return entity
+end
+
+function instantiate_effect(type)
+	local def=effect_library[type]
+	local effect={
+		-- effect properties
+		["type"]=type,
+		["width"]=def.width,
+		["depth"]=def.depth,
+		["animation"]=def.animation,
+		-- methods
+		["init"]=def.init or noop,
+		["update"]=def.update or noop,
+		-- stateful fields
+		["x"]=0,
+		["y"]=0,
+		["z"]=0,
+		["is_alive"]=true,
+		["frames_alive"]=0,
+		["frames_to_death"]=def.frames_to_death or 0
+	}
+	return effect
+end
+
+function spawn_effect_at_tile(type,col,row,init_args)
+	local effect=instantiate_effect(type)
+	effect.x=tile_size*(col-1)+(tile_size-effect.width)/2
+	effect.z=tile_size*(row-1)+(tile_size-effect.depth)/2
+	effect.init(effect,init_args)
+	add(effects,effect)
+	return effects
+end
+
+function spawn_effect_at_pos(type,x,z,init_args)
+	local effect=instantiate_effect(type)
+	effect.x=x
+	effect.z=z
+	effect.init(effect,init_args)
+	add(effects,effect)
+	return effect
+end
+
+function spawn_effect_centered_at_pos(type,x,z,init_args)
+	local effect=instantiate_effect(type)
+	effect.x=x-effect.width/2
+	effect.z=z-effect.depth/2
+	effect.init(effect,init_args)
+	add(effects,effect)
+	return effect
+end
+
+function spawn_effect_centered_on_entity(type,entity,init_args)
+	local effect=instantiate_effect(type)
+	effect.x=entity.x+entity.width/2-effect.width/2
+	effect.z=entity.z+entity.y+entity.depth/2-effect.depth/2
+	effect.init(effect,init_args)
+	add(effects,effect)
+	return effect
 end
 
 function _init()
@@ -271,7 +332,7 @@ function _init()
 end
 
 
--- UPDATE
+-- update
 function update_entity(entity)
 	-- update timers
 	entity.frames_alive+=1
@@ -282,6 +343,9 @@ function update_entity(entity)
 	if entity.frames_to_death>0 then
 		entity.frames_to_death-=1
 		if entity.frames_to_death<=0 then
+			if entity.death_effect then
+				spawn_effect_centered_on_entity(entity.death_effect,entity,{})
+			end
 			entity.is_alive=false
 			return
 		end
@@ -307,15 +371,41 @@ function update_entity(entity)
 			if entity.move_frames_left==entity.tile_update_frame then
 				entity.col+=dx
 				entity.row+=dz
+				--check for fall-off
+				local tile=get_tile(entity.col,entity.row)
+				if tile!=nil and tile.has_wall[entity.move_dir] then
+					entity.on_hit_wall(entity)
+				elseif tile==nil or not tile.is_solid then
+					entity.is_on_grid=false
+					entity.on_fall_off(entity)
+				end
 			end
 			entity.move_frames_left-=1
 		end
 	end
 
 	-- move entity
+	if not entity.is_on_grid then
+		entity.vy-=entity.gravity
+	end
+	local prev_y=entity.y
 	entity.x+=entity.vx
 	entity.y+=entity.vy
 	entity.z+=entity.vz
+
+	-- entity might fall onto the grid
+	local tile=get_tile(entity.col,entity.row)
+	if not entity.is_on_grid and entity.vy<0 and entity.y<=0 and prev_y>=0 and tile!=nil and tile.is_solid then
+		entity.is_on_grid=true
+		entity.y=0
+		entity.vy=0
+	end
+
+	-- entities that fall too far are dead
+	if entity.y<-10 then
+		spawn_effect_centered_on_entity("poof",entity,{})
+		entity.is_alive=false
+	end
 
 	-- update the tile's col and row
 	if not entity.is_on_grid then
@@ -325,6 +415,21 @@ function update_entity(entity)
 
 	-- the entity might want to do some revisions post-move
 	entity.update(entity)
+end
+
+function update_effect(effect)
+	-- update timers
+	effect.frames_alive+=1
+	if effect.frames_to_death>0 then
+		effect.frames_to_death-=1
+		if effect.frames_to_death<=0 then
+			effect.is_alive=false
+			return
+		end
+	end
+
+	-- call the effect's update method
+	effect.update(effect)
 end
 
 function move_entity_on_grid(entity,dir)
@@ -371,20 +476,65 @@ function check_for_collision(entity1,entity2)
 	end
 end
 
-function kill_if_out_of_bounds(entity)
-	local left=tile_size*(entity.col-1)
-	local right=left+tile_size-1
-	local bottom=tile_size*(entity.row-1)
-	local top=bottom+tile_size-1
+function get_tile(col,row)
+	if tiles[row] and tiles[row][col] then
+		return tiles[row][col]
+	end
+	return nil
+end
+
+function get_tile_frame(col,row)
+	local tile=get_tile(col,row)
+	if tile==nil then
+		return nil
+	end
+	local f=flr(game_frame/anim_mult)%#tile.frames+1
+	return tile.frames[f]
+end
+
+function kill_if_out_of_bounds(obj)
+	local left=obj.x
+	local right=left+obj.width-1
+	local bottom=obj.z+obj.y
+	local top=bottom+obj.depth-1
 	if right<0 or left>128 or top<camera_pan_z then
+		obj.is_alive=false
+	end
+end
+
+function destroy_entity(entity,wiggle_frames,death_effect)
+	entity.has_hurtbox=false
+	entity.has_hitbox=false
+	if entity.animation.destroyed then
+		set_entity_action(entity,"destroyed")
+		entity.frames_to_death=anim_mult*#entity.animation[entity.action][entity.facing]
+		entity.wiggle_frames=wiggle_frames or 0
+		entity.death_effect=death_effect
+	else
 		entity.is_alive=false
+		if death_effect then
+			spawn_effect_centered_on_entity(death_effect,entity,{})
+		end
 	end
 end
 
 function _update()
 	-- simulation will not update while paused
 	actual_frame+=1
-	if actual_frame%debug_frame_skip!=0 or is_paused then
+	if actual_frame%frame_skip!=0 or is_paused then
+		return
+	end
+
+	-- when the player is kiled, we have some freeze frames!
+	if player_entity!=nil and not player_entity.is_alive then
+		player_entity=nil
+		freeze_frames+=5
+		frame_skip=3
+	end
+
+	-- freeze grames cause us to skip a chunk of frames
+	if freeze_frames>0 then
+		freeze_frames-=1
 		return
 	end
 
@@ -402,8 +552,9 @@ function _update()
 		end
 	end
 
-	-- update entities
+	-- update entities/effects
 	foreach(entities,update_entity)
+	foreach(effects,update_effect)
 
 	-- add new entities to the game
 	add_all(entities,spawned_entities)
@@ -417,17 +568,19 @@ function _update()
 		end
 	end
 
-	-- kill entities out of bound
+	-- kill entities/effects that go out of bound
 	foreach(entities,kill_if_out_of_bounds)
+	foreach(effects,kill_if_out_of_bounds)
 
 	-- cull dead entities/effects
 	entities=filter_list(entities,is_alive)
+	effects=filter_list(effects,is_alive)
 
 	game_frame+=1
 end
 
 
--- DRAW
+-- draw
 function draw_entity(entity)
 	-- outline tile the entity is on
 	if draw_debug_shapes then
@@ -456,13 +609,33 @@ function draw_entity(entity)
 			if entity.wiggle_frames>0 then
 				wiggle=2*(game_frame%2)-1
 			end
-			spr(frame,left+wiggle-4+entity.width/2,-top+entity.depth/2-5,1,1,flipped,false)
+			spr(frame,left+wiggle-4+entity.width/2,-top-5+entity.depth/2,1,1,flipped,false)
 		end
 		-- draw hitbox
 		if draw_debug_shapes then
 			rect(left,-top,right,-bottom,10)
 			pset(left,-bottom,7)
 		end
+	end
+end
+
+
+function draw_effect(effect)
+	-- draw sprite
+	local left=effect.x
+	local right=left+effect.width-1
+	local bottom=effect.z+effect.y
+	local top=bottom+effect.depth-1
+	if draw_sprites then
+		local f = effect.frames_alive
+		local anim=effect.animation
+		local frame=anim[flr(f/anim_mult)%#anim+1]
+		spr(frame,left-4+effect.width/2,-top-5+effect.depth/2)
+	end
+	-- draw hitbox
+	if draw_debug_shapes then
+		rect(left,-top,right,-bottom,2)
+		pset(left,-bottom,7)
 	end
 end
 
@@ -483,6 +656,36 @@ function draw_tile(tile)
 	end
 	if draw_sprites then
 		spr(tile.frames[f],left-1,-top-2,1,1,tile.flipped,false)
+	end
+end
+
+function draw_directive(directive)
+	if draw_debug_shapes then
+		local left=directive.x
+		local right=left+5-1
+		local bottom=directive.z
+		local top=bottom+5-1
+		if directive.type=="move" then
+			if directive.dir==1 then
+				rectfill(left+0,-top+2,left+0,-bottom-2,14)
+				rectfill(left+1,-top+1,left+1,-bottom-1,14)
+				rectfill(left+2,-top+0,left+2,-bottom-0,14)
+			elseif directive.dir==2 then
+				rectfill(left+2,-top+2,left+2,-bottom-2,14)
+				rectfill(left+1,-top+1,left+1,-bottom-1,14)
+				rectfill(left+0,-top+0,left+0,-bottom-0,14)
+			elseif directive.dir==3 then
+				rectfill(left+2,-bottom-2,right-2,-bottom-2,14)
+				rectfill(left+1,-bottom-1,right-1,-bottom-1,14)
+				rectfill(left+0,-bottom-0,right-0,-bottom-0,14)
+			elseif directive.dir==4 then
+				rectfill(left+2,-bottom-0,right-2,-bottom-0,14)
+				rectfill(left+1,-bottom-1,right-1,-bottom-1,14)
+				rectfill(left+0,-bottom-2,right-0,-bottom-2,14)
+			end
+		else
+			rectfill(left,-top,right,-bottom,14)
+		end
 	end
 end
 
@@ -531,10 +734,16 @@ function _draw()
 
 	-- draw entities
 	foreach(entities,draw_entity)
+
+	-- draw directives (commands for the train)
+	foreach(directives,draw_directive)
+
+	-- draw effects
+	foreach(effects,draw_effect)
 end
 
 
--- HELPER METHODS
+-- helper methods
 function noop() end
 
 function list_has_value(list,val)
@@ -613,20 +822,24 @@ function rects_are_overlapping(x1,y1,x2,y2,x3,y3,x4,y4)
 end
 
 
--- DATA
+-- data
 entity_library={
 	["train_engine"]={
 		["width"]=6,
 		["depth"]=6,
+		["is_on_grid"]=true,
 		["hit_channel"]="player",
-		["hittable_by"]={},
+		["hittable_by"]={"debris"},
 		["animation"]={
 			["default"]={["front"]={2},["back"]={3},["sides"]={1}}
 		},
+		["gravity"]=0.15,
 		["has_grid_movement"]=true,
 		["grid_move_pattern"]={1,1,1,1,1,1},
 		["tile_update_frame"]=2,
 		["init"]=function(entity,args)
+			entity.frames_between_shots=15
+			entity.frames_to_shot=entity.frames_between_shots
 		end,
 		["pre_move_update"]=function(entity)
 			if entity.move_frames_left<=0 then
@@ -638,16 +851,128 @@ entity_library={
 					dir=held_dir
 				end
 				move_entity_on_grid(entity,dir)
+				add(directives,{
+					["x"]=entity.x,
+					["z"]=entity.z,
+					["type"]="move",
+					["dir"]=entity.move_dir,
+					["is_alive"]=true
+				})
 			end
 		end,
 		["update"]=function(entity)
+			if entity.frames_to_shot==0 then
+				if btn(4) then
+					entity.frames_to_shot=entity.frames_between_shots
+					local vx
+					local vz
+					vx,vz=dir_to_vec(entity.facing)
+					local bullet=spawn_entity_centered_at_pos("player_bullet",entity.x+entity.width/2,entity.z+entity.depth/2,entity.facing,{
+						["vx"]=4*vx,
+						["vz"]=4*vz
+					})
+				end
+			else
+				entity.frames_to_shot-=1
+			end
+		end,
+		["on_hit_wall"]=function(entity)
+			destroy_entity(entity,0,"explosion")
+		end,
+		["on_hit_by"]=function(entity,hitter)
+			destroy_entity(entity,0,"explosion")
+		end
+	},
+	["train_car"]={
+		["width"]=6,
+		["depth"]=6,
+		["is_on_grid"]=true,
+		["hit_channel"]="player",
+		["hittable_by"]={"debris"},
+		["animation"]={
+			["default"]={["front"]={5},["back"]={5},["sides"]={4}}
+		},
+		["gravity"]=0.15,
+		["has_grid_movement"]=true,
+		["grid_move_pattern"]={1,1,1,1,1,1},
+		["tile_update_frame"]=2,
+		["init"]=function(entity,args)
+			add(directives,{
+				["x"]=entity.x,
+				["z"]=entity.z,
+				["type"]="move",
+				["dir"]=entity.facing,
+				["is_alive"]=true
+			})
+		end,
+		["pre_move_update"]=function(entity)
+			local i
+			for i=1,#directives do
+				if directives[i].x==entity.x and directives[i].z==entity.z then
+					if directives[i].type=="move" then
+						move_entity_on_grid(entity,directives[i].dir)
+					end
+				end
+			end
+		end,
+		["update"]=function(entity)
+		end,
+		["on_hit_wall"]=function(entity)
+			destroy_entity(entity,0,"explosion")
+		end,
+		["on_hit_by"]=function(entity,hitter)
+			destroy_entity(entity,0,"explosion")
+		end
+	},
+	["train_caboose"]={
+		["width"]=6,
+		["depth"]=6,
+		["is_on_grid"]=true,
+		["hit_channel"]="player",
+		["hittable_by"]={"debris"},
+		["animation"]={
+			["default"]={["front"]={7},["back"]={8},["sides"]={6}}
+		},
+		["gravity"]=0.15,
+		["has_grid_movement"]=true,
+		["grid_move_pattern"]={1,1,1,1,1,1},
+		["tile_update_frame"]=2,
+		["init"]=function(entity,args)
+			add(directives,{
+				["x"]=entity.x,
+				["z"]=entity.z,
+				["type"]="move",
+				["dir"]=entity.facing,
+				["is_alive"]=true
+			})
+		end,
+		["pre_move_update"]=function(entity)
+			local i
+			for i=1,#directives do
+				if directives[i].x==entity.x and directives[i].z==entity.z then
+					if directives[i].type=="move" then
+						move_entity_on_grid(entity,directives[i].dir)
+					end
+					directives[i].is_alive=false
+				end
+			end
+			directives=filter_list(directives,is_alive)
+		end,
+		["update"]=function(entity)
+		end,
+		["on_hit_wall"]=function(entity)
+			destroy_entity(entity,0,"explosion")
+		end,
+		["on_hit_by"]=function(entity,hitter)
+			destroy_entity(entity,0,"explosion")
 		end
 	},
 	["shrub"]={
 		["width"]=6,
 		["depth"]=6,
+		["is_on_grid"]=true,
 		["hit_channel"]="debris",
-		["hittable_by"]={"enemy_projectile"},
+		["hittable_by"]={"player_projectile","enemy_projectile"},
 		["animation"]={
 			["default"]={69}
 		},
@@ -655,11 +980,13 @@ entity_library={
 			entity.is_alive=false
 			entity.has_hurtbox=false
 			entity.has_hitbox=false
+			spawn_effect_centered_on_entity("explosion",entity,{})
 		end
 	},
 	["coin"]={
 		["width"]=4,
 		["depth"]=4,
+		["is_on_grid"]=true,
 		["hit_channel"]="pickup",
 		["hittable_by"]={"player"},
 		["animation"]={
@@ -669,13 +996,15 @@ entity_library={
 			entity.is_alive=false
 			entity.has_hurtbox=false
 			entity.has_hitbox=false
+			spawn_effect_centered_on_entity("coin_pickup",hitter,{})
 		end
 	},
 	["turret"]={
 		["width"]=6,
 		["depth"]=6,
-		["hit_channel"]="debris",
-		["hittable_by"]={},
+		["is_on_grid"]=true,
+		["hit_channel"]="enemy",
+		["hittable_by"]={"player_projectile"},
 		["animation"]={
 			["default"]={
 				["front"]={22,22,22,23,23,23},
@@ -686,6 +1015,11 @@ entity_library={
 				["front"]={22,23,22,23,24,24,24,22},
 				["back"]={38,39,38,39,40,40,40,38},
 				["sides"]={54,55,54,55,56,56,56,54}
+			},
+			["destroyed"]={
+				["front"]={24,24},
+				["back"]={40,40},
+				["sides"]={56,56}
 			}
 		},
 		["init"]=function(entity,args)
@@ -696,7 +1030,7 @@ entity_library={
 		["pre_move_update"]=function(entity)
 		end,
 		["update"]=function(entity)
-			if entity.frames_to_shot==0 then
+			if entity.frames_to_shot<=0 and entity.action=="default" then
 				set_entity_action(entity,"shooting")
 				entity.frames_to_shot=entity.frames_between_shots
 			else
@@ -711,6 +1045,32 @@ entity_library={
 					["vz"]=vz
 				})
 			end
+		end,
+		["on_hit_by"]=function(entity,hitter)
+			destroy_entity(entity,5,"explosion")
+		end
+	},
+	["player_bullet"]={
+		["width"]=4,
+		["depth"]=4,
+		["hit_channel"]="player_projectile",
+		["hittable_by"]={},
+		["animation"]={
+			["default"]={
+				["front"]={14,13,14,15},
+				["back"]={14,13,14,15},
+				["sides"]={30,29,30,31}
+			}
+		},
+		["init"]=function(entity,args)
+			entity.vx=args.vx
+			entity.vz=args.vz
+		end,
+		["on_hit"]=function(entity,hittee)
+			destroy_entity(entity)
+		end,
+		["on_hit_by"]=function(entity,hitter)
+			destroy_entity(entity)
 		end
 	},
 	["enemy_bullet"]={
@@ -726,23 +1086,49 @@ entity_library={
 			entity.vz=args.vz
 		end,
 		["on_hit"]=function(entity,hittee)
-			entity.is_alive=false
-			entity.has_hurtbox=false
-			entity.has_hitbox=false
+			destroy_entity(entity)
 		end,
 		["on_hit_by"]=function(entity,hitter)
-			entity.is_alive=false
-			entity.has_hurtbox=false
-			entity.has_hitbox=false
+			destroy_entity(entity)
+		end
+	}
+}
+
+effect_library={
+	["coin_pickup"]={
+		["width"]=6,
+		["depth"]=6,
+		["frames_to_death"]=20,
+		["animation"]={32,48,49,50},
+		["init"]=function(effect,args)
+			effect.vy=2
+		end,
+		["update"]=function(effect)
+			if effect.vy>0 then
+				effect.y+=effect.vy
+				effect.vy-=0.2
+			end
 		end
 	},
+	["explosion"]={
+		["width"]=6,
+		["depth"]=6,
+		["frames_to_death"]=20,
+		["animation"]={87,88,89,90}
+	},
+	["poof"]={
+		["width"]=6,
+		["depth"]=6,
+		["frames_to_death"]=15,
+		["animation"]={103,104,105}
+	}
 }
 
 levels={
 	{
 		["player_spawn"]={8,5,2}, --col,row,num_cars
 		["entity_list"]={
-			-- type,col,row,facing_dir
+			-- type,col,row,facing
 			{"coin",3,15,3},
 			{"coin",3,16,3},
 			{"coin",3,17,3},
@@ -768,18 +1154,18 @@ levels={
 			{"turret",10,20,4}
 		},
 		["tile_library"]={
-			-- icon={frames,is_flipped}
-			["."]={{64},false}, -- grass
-			["="]={{66},false}, -- bridge
+			-- icon={frames,is_flipped,is_solid,{right_wall,left_wall,bottom_wall,top_wall}}
+			["."]={{64},false,true}, -- grass
+			["="]={{66},false,true}, -- bridge
 			["("]={{82},false}, -- bridge supports
 			[")"]={{82},true}, -- bridge supports
-			["#"]={{80},false}, -- cliff
+			["#"]={{80},false,false,{false,false,true,false}}, -- cliff
 			["*"]={{96},false}, -- cliff end
-			["]"]={{97},false}, -- side cliff
-			["["]={{97},true}, -- side cliff
+			["]"]={{97},false,false,{true,false,true,true}}, -- side cliff
+			["["]={{97},true,false,{false,true,true,true}}, -- side cliff
 			["}"]={{81},false}, -- side cliff end
 			["{"]={{81},true}, -- side cliff end
-			["o"]={{65},false} -- tree stump
+			["o"]={{65},false,true} -- tree stump
 		},
 		["tile_map"]={
 			"         =           ",
@@ -856,14 +1242,14 @@ __gfx__
 024242400442400004000000000000000000000000000000013131300098890000700700a000000a000000000000000000000000000000000000000000000000
 0424242004442400020000000000000000000000000000000111131000099000000000000a0000a0080000800000000000000000000000000000000000000000
 02222220044422200000000000000000000000000000000000131100000000000000000000aaaa00800000080000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-022222200442422000000000000000000b3333b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-02222220044424200000000000000000033333300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00202020044422200000000000000000033333300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-02020200044242200000000000000000013131300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000044424200000000000000000011313100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000000444222000000000000000000b1111b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000070000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000077000000707000000000000000000000000000000000000000000000000
+022222200442422000000000000000000b3333b00000000000000000000000000000777707000070000000000000000000000000000000000000000000000000
+02222220044424200000000000000000033333300000000000000000007777000770077070700000000000000000000000000000000000000000000000000000
+00202020044422200000000000000000033333300000000000000000077777707777000007000000000000000000000000000000000000000000000000000000
+02020200044242200000000000000000013131300000000000000000077777700770770000000070000000000000000000000000000000000000000000000000
+00000000044424200000000000000000011313100000000000000000007777000007777000000707000000000000000000000000000000000000000000000000
+000000000444222000000000000000000b1111b00000000000000000000000000000770000000070000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
@@ -937,7 +1323,7 @@ __gfx__
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __gff__
-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __map__
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
