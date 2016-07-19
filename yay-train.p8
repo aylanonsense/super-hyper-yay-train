@@ -67,6 +67,13 @@ prev_loaded_entity_row=0
 player_entity=nil
 entities={}
 spawned_entities={}
+player_entities={}
+player_projectile_entities={}
+enemy_entities={}
+enemy_projectile_entities={}
+terrain_entities={}
+obstacle_entities={}
+pickup_entities={}
 effects={}
 tiles={}
 directives={}
@@ -97,9 +104,42 @@ function reset()
 	player_entity=nil
 	entities={}
 	spawned_entities={}
+	player_entities={}
+	player_projectile_entities={}
+	enemy_entities={}
+	enemy_projectile_entities={}
+	terrain_entities={}
+	obstacle_entities={}
+	pickup_entities={}
 	effects={}
 	tiles={}
 	directives={}
+end
+
+function add_spawned_entities()
+	for i=1,#spawned_entities do
+		local chan=spawned_entities[i].hit_channel
+		local entity=spawned_entities[i]
+		add(entities,entity)
+		if chan=="player" then
+			add(player_entities,entity)
+		elseif chan=="player_projectile" then
+			add(player_projectile_entities,entity)
+		elseif chan=="enemy" then
+			add(enemy_entities,entity)
+		elseif chan=="enemy_projectile" then
+			add(enemy_projectile_entities,entity)
+		elseif chan=="terrain" then
+			add(terrain_entities,entity)
+		elseif chan=="obstacle" then
+			add(obstacle_entities,entity)
+		elseif chan=="pickup" then
+			add(pickup_entities,entity)
+		else
+			exit_and_print({"Unknown channel "..chan})
+		end
+	end
+	spawned_entities={}
 end
 
 function load_level(l)
@@ -123,8 +163,7 @@ function load_level(l)
 	player_entity=spawn_entity_at_tile("train_engine",col,row,3,{})
 
 	-- add entities to scene
-	add_all(entities,spawned_entities)
-	spawned_entities={}
+	add_spawned_entities()
 end
 
 function check_for_entity_load()
@@ -213,7 +252,6 @@ function instantiate_entity(type)
 		["depth"]=def.depth or 6,
 		["has_grid_movement"]=def.has_grid_movement or false,
 		["hit_channel"]=def.hit_channel,
-		["hittable_by"]=def.hittable_by,
 		["frame_offset"]=def.frame_offset or 0,
 		["animation"]={},
 		["render_priority"]=def.render_priority or 0,
@@ -236,7 +274,7 @@ function instantiate_entity(type)
 		["col"]=0,
 		["row"]=0,
 		["facing"]=1,
-		["is_on_grid"]=def.is_on_grid or false,
+		["is_on_grid"]=def.is_on_grid!=false,
 		["is_alive"]=true,
 		["has_hitbox"]=true,
 		["has_hurtbox"]=true,
@@ -497,28 +535,29 @@ function is_alive(x)
 	return x["is_alive"]
 end
 
-function check_for_collision(entity1,entity2)
-	local are_overlapping=false
-	if entity1.is_on_grid and entity2.is_on_grid then
-		if entity1.col==entity2.col and entity1.row==entity2.row then
-			are_overlapping=true
+function check_for_collisions(hitters,hittees)
+	local i
+	for i=1,#hitters do
+		local j
+		for j=1,#hittees do
+			check_for_collision(hitters[i],hittees[j])
 		end
-	elseif entities_are_overlapping(entity1,entity2) then
-		are_overlapping=true
 	end
-	if are_overlapping then
-		local entity1_is_hit=(entity2.has_hitbox and entity1.has_hurtbox and list_has_value(entity1.hittable_by,entity2.hit_channel))
-		local entity2_is_hit=(entity1.has_hitbox and entity2.has_hurtbox and list_has_value(entity2.hittable_by,entity1.hit_channel))
-		if entity1_is_hit then
-			entity2.on_hit(entity2,entity1)
-		end
-		if entity2_is_hit then
-			entity1.on_hit(entity1,entity2)
-			entity2.on_hit_by(entity2,entity1)
-		end
-		if entity1_is_hit then
-			entity1.on_hit_by(entity1,entity2)
-		end
+end
+
+function check_for_collision(hitter,hittee)
+	if hitter.has_hitbox and hittee.has_hurtbox then
+		-- if hitter.is_on_grid and hittee.is_on_grid then
+			if hitter.col==hittee.col and hitter.row==hittee.row then
+				if hitter.on_hit(hitter,hittee)!=false then
+					hittee.on_hit_by(hittee,hitter)
+				end
+			end
+		-- elseif entities_are_overlapping(hitter,hittee) then
+			-- if hitter.on_hit(hitter,hittee)!=false then
+				-- hittee.on_hit_by(hittee,hitter)
+			-- end
+		-- end
 	end
 end
 
@@ -617,17 +656,26 @@ function _update()
 	foreach(entities,update_entity)
 	foreach(effects,update_effect)
 
-	-- add new entities to the game
-	add_all(entities,spawned_entities)
-	spawned_entities={}
+	-- check for collisions (hitter-->hittee)
+	check_for_collisions(player_projectile_entities,obstacle_entities)
+	check_for_collisions(player_projectile_entities,enemy_projectile_entities)
+	check_for_collisions(player_projectile_entities,enemy_entities)
 
-	-- check for collisions
-	for i=1,#entities do
-		local j
-		for j=i+1,#entities do
-			check_for_collision(entities[i],entities[j])
-		end
-	end
+	check_for_collisions(enemy_projectile_entities,obstacle_entities)
+	check_for_collisions(enemy_projectile_entities,player_entities)
+
+	check_for_collisions(terrain_entities,enemy_entities)
+	check_for_collisions(obstacle_entities,enemy_entities)
+	check_for_collisions(player_projectile_entities,enemy_entities)
+
+	check_for_collisions(player_entities,pickup_entities)
+	check_for_collisions(terrain_entities,player_entities)
+	check_for_collisions(obstacle_entities,player_entities)
+	check_for_collisions(enemy_entities,player_entities)
+	check_for_collisions(enemy_projectile_entities,player_entities)
+
+	-- add new entities to the game
+	add_spawned_entities()
 
 	-- kill entities/effects that go out of bound
 	foreach(entities,kill_if_out_of_bounds)
@@ -636,6 +684,13 @@ function _update()
 	-- cull dead entities/effects
 	entities=filter_list(entities,is_alive)
 	effects=filter_list(effects,is_alive)
+	player_entities=filter_list(player_entities,is_alive)
+	player_projectile_entities=filter_list(player_projectile_entities,is_alive)
+	enemy_entities=filter_list(enemy_entities,is_alive)
+	enemy_projectile_entities=filter_list(enemy_projectile_entities,is_alive)
+	terrain_entities=filter_list(terrain_entities,is_alive)
+	obstacle_entities=filter_list(obstacle_entities,is_alive)
+	pickup_entities=filter_list(pickup_entities,is_alive)
 
 	game_frame+=1
 end
@@ -674,8 +729,13 @@ function draw_entity(entity)
 		end
 		-- draw hitbox
 		if draw_debug_shapes then
-			rect(left,-top,right,-bottom,10)
-			pset(left,-bottom,7)
+			if entity.is_on_grid then
+				rect(left,-top,right,-bottom,10)
+				pset(left,-bottom,7)
+			else
+				rect(left,-top,right,-bottom,14)
+				pset(left,-bottom,7)
+			end
 		end
 	end
 end
@@ -917,9 +977,7 @@ end
 -- data
 entity_library={
 	["train_engine"]={
-		["is_on_grid"]=true,
 		["hit_channel"]="player",
-		["hittable_by"]={"debris"},
 		["animation"]={
 			["default"]={["front"]={1},["back"]={2},["sides"]={0}}
 		},
@@ -983,9 +1041,7 @@ entity_library={
 		end
 	},
 	["train_car"]={
-		["is_on_grid"]=true,
 		["hit_channel"]="player",
-		["hittable_by"]={"debris"},
 		["animation"]={
 			["default"]={["front"]={19},["back"]={19},["sides"]={3}}
 		},
@@ -1022,9 +1078,7 @@ entity_library={
 		end
 	},
 	["train_caboose"]={
-		["is_on_grid"]=true,
 		["hit_channel"]="player",
-		["hittable_by"]={"debris"},
 		["animation"]={
 			["default"]={["front"]={17},["back"]={18},["sides"]={16}}
 		},
@@ -1063,9 +1117,7 @@ entity_library={
 		end
 	},
 	["shrub"]={
-		["is_on_grid"]=true,
-		["hit_channel"]="debris",
-		["hittable_by"]={"player_projectile","enemy_projectile"},
+		["hit_channel"]="obstacle",
 		["animation"]={
 			["default"]={26}
 		},
@@ -1074,11 +1126,7 @@ entity_library={
 		end
 	},
 	["coin"]={
-		["width"]=4,
-		["depth"]=4,
-		["is_on_grid"]=true,
 		["hit_channel"]="pickup",
-		["hittable_by"]={"player"},
 		["animation"]={
 			["default"]={32,33,34,35}
 		},
@@ -1087,9 +1135,7 @@ entity_library={
 		end
 	},
 	["spear-thrower"]={
-		["is_on_grid"]=true,
 		["hit_channel"]="enemy",
-		["hittable_by"]={"player_projectile"},
 		["animation"]={
 			["default"]={64,64,64,65,65,65},
 			["shooting"]={66,66,66,67,67,67},
@@ -1124,8 +1170,8 @@ entity_library={
 	["player_bullet"]={
 		["width"]=4,
 		["depth"]=4,
+		["is_on_grid"]=false,
 		["hit_channel"]="player_projectile",
-		["hittable_by"]={},
 		["animation"]={
 			["default"]={
 				["front"]={5,4,5,6},
@@ -1147,8 +1193,8 @@ entity_library={
 	["spear"]={
 		["width"]=4,
 		["depth"]=4,
+		["is_on_grid"]=false,
 		["hit_channel"]="enemy_projectile",
-		["hittable_by"]={},
 		["animation"]={
 			["default"]={69}
 		},
@@ -1164,8 +1210,7 @@ entity_library={
 		end
 	},
 	["clothesline"]={
-		["hit_channel"]="debris",
-		["hittable_by"]={"player_projectile","enemy_projectile"},
+		["hit_channel"]="obstacle",
 		["animation"]={
 			["default"]={["front"]={30},["back"]={31},["sides"]={29}}
 		},
@@ -1198,8 +1243,7 @@ entity_library={
 		end
 	},
 	["clothes"]={
-		["hit_channel"]="details",
-		["hittable_by"]={"player","player_projectile","enemy_projectile"},
+		["hit_channel"]="obstacle",
 		["animation"]={
 			["default"]={
 				["front"]={44,44,44,44,44,45,45,44,44,44,45,45},
@@ -1221,13 +1265,16 @@ entity_library={
 				destroy_entity(entity,0,"flying_clothes",{["frame_offset"]=entity.frame_offset})
 			end
 		end,
+		["on_hit"]=function(entity,hittee)
+			destroy_entity(entity,0,"flying_clothes",{["frame_offset"]=entity.frame_offset})
+			return false
+		end,
 		["on_hit_by"]=function(entity,hitter)
 			destroy_entity(entity,0,"flying_clothes",{["frame_offset"]=entity.frame_offset})
 		end
 	},
 	["trap"]={
-		["hit_channel"]="debris",
-		["hittable_by"]={"player"},
+		["hit_channel"]="obstacle",
 		["animation"]={
 			["default"]={11},
 			["prepped"]={12},
@@ -1235,7 +1282,6 @@ entity_library={
 		},
 		["render_priority"]=-1,
 		["init"]=function(entity,args)
-			entity.has_hitbox=false
 			entity.frames_to_trigger=0
 		end,
 		["update"]=function(entity)
@@ -1249,35 +1295,35 @@ entity_library={
 				end
 			end
 		end,
-		["on_hit_by"]=function(entity,hitter)
-			if not entity.has_hitbox then
+		["on_hit"]=function(entity,hittee)
+			if entity.action!="triggered" then
 				entity.frames_to_trigger=5
 				set_entity_action(entity,"prepped",true)
+				return false
 			end
 		end
 	},
 	["jump_pad"]={
 		["hit_channel"]="terrain",
-		["hittable_by"]={"player"},
 		["animation"]={
 			["default"]={112},
 			["bounce"]={113,114}
 		},
-		["on_hit_by"]=function(entity,hitter)
-			if hitter.y==0 then
-				hitter.vy=2.1
-				hitter.is_on_grid=false
-				hitter.move_frames_left=0
-				hitter.on_fall_off(hitter)
+		["on_hit"]=function(entity,hittee)
+			if hittee.y==0 then
+				hittee.vy=2.1
+				hittee.is_on_grid=false
+				hittee.move_frames_left=0
+				hittee.on_fall_off(hittee)
 				if entity.action!="bounce" then
 					set_entity_action(entity,"bounce")
 				end
 			end
+			return false
 		end
 	},
 	["boulder"]={
-		["hit_channel"]="debris",
-		["hittable_by"]={"player_projectile","enemy_projectile"},
+		["hit_channel"]="obstacle",
 		["animation"]={
 			["default"]={96},
 			["damaged"]={97},
@@ -1384,19 +1430,10 @@ levels={
 			{"coin",13,13,3},
 			{"coin",13,16,3},
 			{"coin",13,17,3},
-			-- {"shrub",9,15,3},
-			-- {"shrub",9,16,3},
-			-- {"shrub",10,15,3},
-			-- {"shrub",10,16,3},
-			-- {"shrub",17,19,3},
-			-- {"shrub",1,17,3},
-			-- {"shrub",1,18,3},
-			-- {"shrub",2,18,3},
-			-- {"shrub",3,18,3},
 			{"spear-thrower",17,16,1},
 			{"spear-thrower",10,19,2},
-			{"clothesline",12,18,3,{["length"]=4}},
-			{"clothesline",4,14,2,{["length"]=4}}
+			{"clothesline",12,18,3,{["length"]=7}},
+			{"clothesline",4,14,2,{["length"]=7}}
 		},
 		["tile_library"]={
 			-- icon={tile_frames,tile_is_flipped,tile_is_solid,{right_wall,left_wall,bottom_wall,top_wall},{entity_type,entity_facing,entity_args}}
@@ -1446,36 +1483,36 @@ levels={
 __gfx__
 08880099008888000009900000000000000000000000000000000000000000000000000000000000000000000000000000000000000700000000000000000000
 88888088088888800088880000000000000000000000000000000000000300000000000000000000000000000000000000000000007470000000000000000000
-092908080092290008888880089898000007700000088000000aa0000bb3bbb00bbbbbb0094999900fbfbfb00000000000055000006467700000000000004000
-092989980292292000922900085558000007700000088000000aa0000bbbbbb00bb44bb0099944900bfffff00050050000555500000404700000400000000040
-298988880988889002922920085558000007700000088000000aa00003b3bbb00b4ff4b0094499900fffffb00005500000055000077440000000400004000000
-588889990989989008888880589898000007700000088000000aa0000b3bb3b00b4ff4b0099999400bfffff00005500000500500074220000040404000040000
-022222250255552008222280022222000000000000000000000000000bbbb3b00bb44bb0099449900fffffb00050050000000000000400000440400000000000
+092908080092290008888880089898000007700000088000000aa0000bb3bbb00bbbbbb0094999900fbfbfb00000000000044000006467700000000000004000
+092989980292292000922900085558000007700000088000000aa0000bbbbbb00bb44bb0099944900bfffff00040040000444400000404700000400000000040
+298988880988889002922920085558000007700000088000000aa00003b3bbb00b4ff4b0094499900fffffb00004400000044000077440000000400004000000
+588889990989989008888880589898000007700000088000000aa0000b3bb3b00b4ff4b0099999400bfffff00004400000400400074220000040404000040000
+022222250255552008222280022222000000000000000000000000000bbbb3b00bb44bb0099449900fffffb00040040000000000000400000440400000000000
 025025050555555005200250025025000000000000000000000000000bbbbbb00bbbbbb0099999900bfbfbf00000000000000000000000000000000000000000
 00888000008888000088880000000000000000000000000000000000000000000000000000000000000330000000000000000000000440000004400000044000
 88888880088888800888888000888800000000000000000000000000000000000000000000000000003333000000000000000000000110000001100000011000
-08282800088228800882288000955900000000000000000000000000044444400400000004444440003333000fbbbfb00bbfbbb0001411100001410000044100
-08282800008888000088880000855800007777000088880000aaaa00044444400440000004440000033333300bffffb00bfffff0000440010001400000044000
-09989900009229000098890000955900007777000088880000aaaa00044424400444000004400000031333300fffffb00fffffb0000440000001400000044000
-08888800008228000088880000888800000000000000000000000000042424200442400004000000013131300bfffff00bfffbb000f44f0000f14f0000f44f00
-02222200002222000088880000222200000000000000000000000000042424200444240002000000011113100fffffb00bbfffb000f44f0000f14f0000f44f00
-0250250000522500005225000052250000000000000000000000000002242220044422200f000000001311000bfbbbf00bbbfbb0000ff0000001f000000ff000
+08282800088228800882288000955900000000000000000000000000044444400400000004444440003333000000000000000000001411100001410000044100
+08282800008888000088880000855800007777000088880000aaaa00044444400440000004440000033333300000000000000000000440010001400000044000
+09989900009229000098890000955900007777000088880000aaaa00044424400444000004400000031333300000000000000000000440000001400000044000
+0888880000822800008888000088880000000000000000000000000004242420044240000400000001313130000000000000000000f44f0000f14f0000f44f00
+0222220000222200008888000022220000000000000000000000000004242420044424000200000001111310000000000000000000f44f0000f14f0000f44f00
+0250250000522500005225000052250000000000000000000000000002242220044422200f000000001311000000000000000000000ff0000001f000000ff000
 00000000000000000000000000000000000000000000000000000070000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000077000000707000000000000000000000000000000000000000000000000000000000000000000000000
-0007a00000079000000990000009700000000000000077770700007002222220044242200492294000008800000820000f000f000f000f0000f1800000f10000
-0077a900000a9000009999000009a000007777000770077070700000022222200444242009222290088882000088880018888810188888100001820000012000
-007aa900000a9000009999000009a000077777707777000007000000022222200444222002222220028888000888880002888200028882000001880000018000
-00aaa900000a9000009999000009a0000777777007707700000000700222222004424220022222200880880002880000088088000880880000f1800000f10000
-000a9000000a9000000990000009a000007777000007777000000707022222200444242009222290088000000088000008808800000000000001280000018000
-00000000000000000000000000000000000000000000770000000070022222200444222004922940000000000000000000000000000000000001080000018000
+0007a00000079000000990000009700000000000000077770700007002222220044242200000000000008800000820000f000f000f000f0000f1800000f10000
+0077a900000a9000009999000009a000007777000770077070700000022222200444242000000000088882000088880018888810188888100001820000012000
+007aa900000a9000009999000009a000077777707777000007000000022222200444222000000000028888000888880002888200028882000001880000018000
+00aaa900000a9000009999000009a0000777777007707700000000700222222004424220000000000880880002880000088088000880880000f1800000f10000
+000a9000000a9000000990000009a000007777000007777000000707022222200444242000000000088000000088000008808800000000000001280000018000
+00000000000000000000000000000000000000000000770000000070022222200444222000000000000000000000000000000000000000000001080000018000
 000000000000000000000000000000000000000000aaaa0080000008000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000099000000000000a0000a008000080000000000000000000000000000000000000000000000000000000000000000000000000
-00077000000aa00000a00a000098890000700700a000000a0000000002f2f2f00000000008eaae8000009900000940000f000f000f000f0000f1900000f10000
-0077770000a00a00000000000988889000077000a000000a000000000f2f2f20000000000ea99ae0099994000099990019999910199999100001940000014000
-0077770000a00a00000000000988889000077000a000000a000000000ffffff0000000000aa99aa0049999000999990004999400049994000001990000019000
-0077770000a00a00000000000098890000700700a000000a000000000ffffff0000000000ea99ae00990990004990000099099000990990000f1900000f10000
-00077000000aa00000a00a0000099000000000000a0000a00800008000f0f0f00000000008eaae80099000000099000009909900000000000001490000019000
-000000000000000000000000000000000000000000aaaa00800000080f0f0f000000000005555dd0000000000000000000000000000000000001090000019000
+00077000000aa00000a00a000098890000700700a000000a0000000002f2f2f0000000000000000000009900000940000f000f000f000f0000f1900000f10000
+0077770000a00a00000000000988889000077000a000000a000000000f2f2f200000000000000000099994000099990019999910199999100001940000014000
+0077770000a00a00000000000988889000077000a000000a000000000ffffff00000000000000000049999000999990004999400049994000001990000019000
+0077770000a00a00000000000098890000700700a000000a000000000ffffff000000000000000000990990004990000099099000990990000f1900000f10000
+00077000000aa00000a00a0000099000000000000a0000a00800008000f0f0f00000000000000000099000000099000009909900000000000001490000019000
+000000000000000000000000000000000000000000aaaa00800000080f0f0f000000000000000000000000000000000000000000000000000001090000019000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00100000000100000101167000010000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000ccc00000ccc0044ccc467000ccc00000c1c100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
