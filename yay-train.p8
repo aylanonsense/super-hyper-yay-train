@@ -50,6 +50,8 @@ wipe_frames=0
 actual_frame=0
 is_paused=false
 is_drawing=true
+is_handling_train_car_hit=false
+train_car_to_kill=nil
 -- game vars
 game_frame=0
 freeze_frames=0
@@ -87,6 +89,8 @@ function reset()
 	actual_frame=0
 	is_paused=false
 	is_drawing=true
+	is_handling_train_car_hit=false
+	train_car_to_kill=nil
 	-- game vars
 	game_frame=0
 	freeze_frames=0
@@ -153,12 +157,19 @@ function load_level(l)
 	local col=level.player_spawn[1]
 	local row=level.player_spawn[2]
 	local num_cars=level.player_spawn[3]
-	spawn_entity_at_tile("train_caboose",col,row-1-num_cars,3,{})
+	local next_car=spawn_entity_at_tile("train_caboose",col,row-1-num_cars,3,{
+		["add_directive"]=true
+	})
 	local i
 	for i=num_cars,1,-1 do
-		spawn_entity_at_tile("train_car",col,row-i,3,{})
+		next_car=spawn_entity_at_tile("train_car",col,row-i,3,{
+			["next_car"]=next_car,
+			["add_directive"]=true
+		})
 	end
-	player_entity=spawn_entity_at_tile("train_engine",col,row,3,{})
+	player_entity=spawn_entity_at_tile("train_engine",col,row,3,{
+		["next_car"]=next_car
+	})
 
 	-- add entities to scene
 	add_spawned_entities()
@@ -254,6 +265,7 @@ function instantiate_entity(type)
 		["animation"]=nil,
 		["render_priority"]=def.render_priority or 0,
 		["projectile_armor"]=def.projectile_armor or 0,
+		["casts_shadows"]=def.casts_shadows!=false,
 		-- methods
 		["init"]=def.init or noop,
 		["pre_move_update"]=def.pre_move_update or noop,
@@ -263,6 +275,8 @@ function instantiate_entity(type)
 		["on_hit_wall"]=def.on_hit_wall or noop,
 		["on_hit_ground"]=def.on_hit_ground or noop,
 		["on_fall_off"]=def.on_fall_off or noop,
+		["pre_destroyed"]=def.pre_destroyed or noop,
+		["destroyed"]=def.destroyed or noop,
 		-- stateful fields
 		["x"]=0,
 		["y"]=0,
@@ -276,16 +290,17 @@ function instantiate_entity(type)
 		["facing"]=1,
 		["is_on_grid"]=def.is_on_grid!=false,
 		["is_alive"]=true,
+		["is_frozen"]=false,
 		["has_hitbox"]=true,
 		["has_hurtbox"]=true,
 		["action"]="default",
 		["action_frames"]=0,
 		["action_loops"]=true,
 		["wiggle_frames"]=0,
+		["freeze_frames"]=0,
 		["frames_alive"]=0,
 		["frames_to_death"]=def.frames_to_death or 0,
-		["death_effect"]=nil,
-		["death_effect_args"]=nil
+		["death_cause"]=nil
 	}
 	-- some additional props for grid-moving entities
 	if entity.has_grid_movement then
@@ -361,48 +376,50 @@ function instantiate_effect(type)
 		-- methods
 		["init"]=def.init or noop,
 		["update"]=def.update or noop,
+		["destroyed"]=def.destroyed or noop,
 		-- stateful fields
 		["x"]=0,
 		["y"]=0,
 		["z"]=0,
 		["is_alive"]=true,
+		["is_frozen"]=false,
 		["frames_alive"]=0,
 		["frames_to_death"]=def.frames_to_death or 0
 	}
 	return effect
 end
 
-function spawn_effect_at_tile(type,col,row,init_args)
-	local effect=instantiate_effect(type)
-	effect.x=tile_size*(col-1)+(tile_size-effect.width)/2
-	effect.z=tile_size*(row-1)+(tile_size-effect.depth)/2
-	effect.init(effect,init_args)
-	add(effects,effect)
-	return effects
-end
+-- function spawn_effect_at_tile(type,col,row,init_args)
+-- 	local effect=instantiate_effect(type)
+-- 	effect.x=tile_size*(col-1)+(tile_size-effect.width)/2
+-- 	effect.z=tile_size*(row-1)+(tile_size-effect.depth)/2
+-- 	effect.init(effect,init_args)
+-- 	add(effects,effect)
+-- 	return effects
+-- end
 
-function spawn_effect_at_pos(type,x,z,init_args)
-	local effect=instantiate_effect(type)
-	effect.x=x
-	effect.z=z
-	effect.init(effect,init_args)
-	add(effects,effect)
-	return effect
-end
+-- function spawn_effect_at_pos(type,x,z,init_args)
+-- 	local effect=instantiate_effect(type)
+-- 	effect.x=x
+-- 	effect.z=z
+-- 	effect.init(effect,init_args)
+-- 	add(effects,effect)
+-- 	return effect
+-- end
 
-function spawn_effect_centered_at_pos(type,x,z,init_args)
-	local effect=instantiate_effect(type)
-	effect.x=x-effect.width/2
-	effect.z=z-effect.depth/2
-	effect.init(effect,init_args)
-	add(effects,effect)
-	return effect
-end
+-- function spawn_effect_centered_at_pos(type,x,z,init_args)
+-- 	local effect=instantiate_effect(type)
+-- 	effect.x=x-effect.width/2
+-- 	effect.z=z-effect.depth/2
+-- 	effect.init(effect,init_args)
+-- 	add(effects,effect)
+-- 	return effect
+-- end
 
-function spawn_effect_centered_on_entity(type,entity,init_args)
+function spawn_effect_centered_on(type,parent,init_args)
 	local effect=instantiate_effect(type)
-	effect.x=entity.x+entity.width/2-effect.width/2
-	effect.z=entity.z+entity.y+entity.depth/2-effect.depth/2
+	effect.x=parent.x+parent.width/2-effect.width/2
+	effect.z=parent.z+parent.y+parent.depth/2-effect.depth/2
 	effect.init(effect,init_args)
 	add(effects,effect)
 	return effect
@@ -416,6 +433,13 @@ end
 
 -- update
 function update_entity(entity)
+	if entity.is_frozen then
+		return
+	elseif entity.freeze_frames>0 then
+		entity.freeze_frames-=1
+		return
+	end
+
 	-- update timers
 	entity.frames_alive+=1
 	entity.action_frames+=1
@@ -425,10 +449,8 @@ function update_entity(entity)
 	if entity.frames_to_death>0 then
 		entity.frames_to_death-=1
 		if entity.frames_to_death<=0 then
-			if entity.death_effect then
-				spawn_effect_centered_on_entity(entity.death_effect,entity,entity.death_effect_args)
-			end
 			entity.is_alive=false
+			entity.destroyed(entity,entity.death_cause)
 			return
 		end
 	end
@@ -438,6 +460,9 @@ function update_entity(entity)
 
 	-- the entity may want to adjust its velocity
 	entity.pre_move_update(entity)
+	if entity.is_frozen or entity.freeze_frames>0 then
+		return
+	end
 
 	-- entities on the grid have special movement logic
 	if entity.is_on_grid and entity.has_grid_movement then
@@ -491,7 +516,7 @@ function update_entity(entity)
 
 	-- entities that fall too far are dead
 	if entity.y<-10 then
-		spawn_effect_centered_on_entity("poof",entity,{})
+		spawn_effect_centered_on("poof",entity)
 		entity.is_alive=false
 	end
 
@@ -506,12 +531,17 @@ function update_entity(entity)
 end
 
 function update_effect(effect)
+	if effect.is_frozen then
+		return
+	end
+
 	-- update timers
 	effect.frames_alive+=1
 	if effect.frames_to_death>0 then
 		effect.frames_to_death-=1
 		if effect.frames_to_death<=0 then
 			effect.is_alive=false
+			effect.destroyed(effect)
 			return
 		end
 	end
@@ -537,7 +567,15 @@ function set_entity_action(entity,action,loops)
 end
 
 function is_alive(x)
-	return x["is_alive"]
+	return x.is_alive
+end
+
+function freeze(x)
+	x.is_frozen=true
+end
+
+function unfreeze(x)
+	x.is_frozen=false
 end
 
 function check_for_collisions(hitters,hittees)
@@ -592,23 +630,41 @@ function kill_if_out_of_bounds(obj)
 	end
 end
 
-function destroy_entity(entity,wiggle_frames,death_effect,death_effect_args)
+function destroy_entity(entity,cause)
 	entity.has_hurtbox=false
 	entity.has_hitbox=false
 	if entity.animation!=nil and entity.animation.destroyed then
 		if entity.action!="destroyed" then
 			set_entity_action(entity,"destroyed")
 			entity.frames_to_death=anim_mult*#entity.animation[entity.action][entity.facing]
-			entity.wiggle_frames=wiggle_frames or 0
-			entity.death_effect=death_effect
-			entity.death_effect_args=death_effect_args
+			entity.death_cause=cause
+			entity.pre_destroyed(entity,cause)
 		end
 	else
+		entity.death_cause=cause
+		entity.pre_destroyed(entity,cause)
 		entity.is_alive=false
-		if death_effect then
-			spawn_effect_centered_on_entity(death_effect,entity,death_effect_args)
-		end
+		entity.destroyed(entity,cause)
 	end
+end
+
+function handle_train_car_hit(entity)
+	freeze_frames=5
+	is_handling_train_car_hit=true
+	train_car_to_kill=entity
+	foreach(entities,freeze)
+	foreach(effects,freeze)
+	local car=player_entity
+	while car!=nil do
+		car.has_hurtbox=false
+		car=car.next_car
+	end
+	add(directives,{
+		["x"]=entity.x,
+		["z"]=entity.z,
+		["type"]="resume_play",
+		["is_alive"]=true
+	})
 end
 
 function _update()
@@ -618,41 +674,62 @@ function _update()
 		return
 	end
 
-	-- when the player is kiled, we have some freeze frames!
-	if player_entity!=nil and not player_entity.is_alive then
-		player_entity=nil
-		freeze_frames+=5
-		frame_skip=3
-		wipe_frames=75
-	end
-
-	-- after the screen wipe, we reset the level
-	if player_entity==nil and wipe_frames<=0 then
-		reset()
-		load_level(1)
-	end
-
 	-- freeze frames cause us to skip a chunk of frames
 	if freeze_frames>0 then
 		freeze_frames-=1
 		return
 	end
 
-	-- the camera slowly pans upwards
-	if game_frame%camera_pan_freq==0 then
-		camera_pan_z+=1
+	-- after the screen wipe, we reset the level
+	if player_entity==nil then
+		if train_car_to_kill!=nil then
+			destroy_entity(train_car_to_kill)
+			train_car_to_kill=train_car_to_kill.next_car
+		end
+		if wipe_frames<=0 then
+			reset()
+			load_level(1)
+			return
+		end
+	-- when the player is killed, we have some freeze frames!
+	elseif not player_entity.is_alive then
+		-- local car=player_entity.next_car
+		-- while car!=nil do
+		-- 	destroy_entity(car)
+		-- 	car=car.next_car
+		-- end
+		train_car_to_kill=player_entity.next_car
+		player_entity=nil
+		freeze_frames+=5
+		frame_skip=3
+		wipe_frames=75
 	end
 
-	-- handle inputs
-	held_dir=0
-	local curr_btns={}
-	local i
-	for i=1,4 do
-		curr_btns[i]=btn(i-1)
-		if curr_btns[i] and player_entity!=nil and i!=player_entity.move_dir and i!=opposite_dirs[player_entity.move_dir] then
-			held_dir=i
-			if not prev_btns[i] and pressed_dir==0 then
-				pressed_dir=i
+	if is_handling_train_car_hit then
+		if train_car_to_kill.type=="train_caboose" then
+			unfreeze(train_car_to_kill)
+		else
+			destroy_entity(train_car_to_kill)
+			train_car_to_kill=train_car_to_kill.next_car
+			freeze_frames=1
+		end
+	else
+		-- the camera slowly pans upwards
+		if game_frame%camera_pan_freq==0 then
+			camera_pan_z+=1
+		end
+
+		-- handle inputs
+		held_dir=0
+		local curr_btns={}
+		local i
+		for i=1,4 do
+			curr_btns[i]=btn(i-1)
+			if curr_btns[i] and player_entity!=nil and i!=player_entity.move_dir and i!=opposite_dirs[player_entity.move_dir] then
+				held_dir=i
+				if not prev_btns[i] and pressed_dir==0 then
+					pressed_dir=i
+				end
 			end
 		end
 	end
@@ -661,23 +738,40 @@ function _update()
 	foreach(entities,update_entity)
 	foreach(effects,update_effect)
 
-	-- check for collisions (hitter-->hittee)
-	check_for_collisions(player_projectile_entities,obstacle_entities)
-	check_for_collisions(player_projectile_entities,enemy_projectile_entities)
-	check_for_collisions(player_projectile_entities,enemy_entities)
+	if is_handling_train_car_hit then
+		if train_car_to_kill!=nil and train_car_to_kill.type=="train_caboose" then
+			update_entity(train_car_to_kill)
+		end
+	else
+		-- check for collisions (hitter-->hittee)
+		check_for_collisions(player_projectile_entities,obstacle_entities)
+		check_for_collisions(player_projectile_entities,enemy_projectile_entities)
+		check_for_collisions(player_projectile_entities,enemy_entities)
 
-	check_for_collisions(enemy_projectile_entities,obstacle_entities)
-	check_for_collisions(enemy_projectile_entities,player_entities)
+		check_for_collisions(enemy_projectile_entities,obstacle_entities)
+		check_for_collisions(enemy_projectile_entities,player_entities)
 
-	check_for_collisions(terrain_entities,enemy_entities)
-	check_for_collisions(obstacle_entities,enemy_entities)
-	check_for_collisions(player_projectile_entities,enemy_entities)
+		check_for_collisions(terrain_entities,enemy_entities)
+		check_for_collisions(obstacle_entities,enemy_entities)
+		check_for_collisions(player_projectile_entities,enemy_entities)
 
-	check_for_collisions(player_entities,pickup_entities)
-	check_for_collisions(terrain_entities,player_entities)
-	check_for_collisions(obstacle_entities,player_entities)
-	check_for_collisions(enemy_entities,player_entities)
-	check_for_collisions(enemy_projectile_entities,player_entities)
+		check_for_collisions(player_entities,pickup_entities)
+		check_for_collisions(terrain_entities,player_entities)
+		check_for_collisions(obstacle_entities,player_entities)
+		check_for_collisions(enemy_entities,player_entities)
+		check_for_collisions(enemy_projectile_entities,player_entities)
+
+		if player_entity!=nil and player_entity.is_on_grid then
+			local i
+			local car=player_entity.next_car
+			while car!=nil do
+				check_for_collision(car,player_entity)
+				car=car.next_car
+			end
+		end
+
+		game_frame+=1
+	end
 
 	-- add new entities to the game
 	add_spawned_entities()
@@ -697,7 +791,12 @@ function _update()
 	obstacle_entities=filter_list(obstacle_entities,is_alive)
 	pickup_entities=filter_list(pickup_entities,is_alive)
 
-	game_frame+=1
+	-- resume play once the caboose is caught up
+	if is_handling_train_car_hit and train_car_to_kill==nil then
+		is_handling_train_car_hit=false
+		foreach(entities,unfreeze)
+		foreach(effects,unfreeze)
+	end
 end
 
 
@@ -718,7 +817,7 @@ function draw_entity(entity)
 		local bottom=entity.z
 		local top=bottom+entity.depth-1
 		-- draw shadow
-		if entity.y>0 then
+		if entity.y>0 and entity.casts_shadows then
 			local shadow_frame=28
 			if entity.y>10 then
 				shadow_frame=27
@@ -981,6 +1080,7 @@ end
 function exit_and_print(lines)
 	is_paused=true
 	is_drawing=fale
+	camera()
 	cls()
 	local i
 	color(8)
@@ -1004,6 +1104,7 @@ entity_library={
 		["init"]=function(entity,args)
 			entity.frames_between_shots=15
 			entity.frames_to_shot=entity.frames_between_shots
+			entity.next_car=args.next_car
 		end,
 		["pre_move_update"]=function(entity)
 			if entity.move_frames_left<=0 then
@@ -1047,13 +1148,16 @@ entity_library={
 		end,
 		["on_hit_wall"]=function(entity)
 			if not godmode then
-				destroy_entity(entity,0,"explosion")
+				destroy_entity(entity)
 			end
 		end,
 		["on_hit_by"]=function(entity,hitter)
 			if not godmode then
-				destroy_entity(entity,0,"explosion")
+				destroy_entity(entity)
 			end
+		end,
+		["destroyed"]=function(entity,cause)
+			spawn_effect_centered_on("explosion",entity)
 		end
 	},
 	["train_car"]={
@@ -1066,13 +1170,17 @@ entity_library={
 		["grid_move_pattern"]={1,1,1,1,1,1},
 		["tile_update_frame"]=2,
 		["init"]=function(entity,args)
-			add(directives,{
-				["x"]=entity.x,
-				["z"]=entity.z,
-				["type"]="move",
-				["dir"]=entity.facing,
-				["is_alive"]=true
-			})
+			if args.add_directive then
+				add(directives,{
+					["x"]=entity.x,
+					["z"]=entity.z,
+					["type"]="move",
+					["dir"]=entity.facing,
+					["is_alive"]=true
+				})
+			end
+			entity.friend=nil
+			entity.next_car=args.next_car
 		end,
 		["pre_move_update"]=function(entity)
 			local i
@@ -1085,12 +1193,21 @@ entity_library={
 			end
 		end,
 		["update"]=function(entity)
+			if entity.friend!=nil then
+				entity.friend.x=entity.x
+				entity.friend.y=entity.y+3
+				entity.friend.z=entity.z
+				entity.friend.facing=entity.facing
+			end
 		end,
 		["on_hit_wall"]=function(entity)
-			destroy_entity(entity,0,"explosion")
+			destroy_entity(entity)
 		end,
 		["on_hit_by"]=function(entity,hitter)
-			destroy_entity(entity,0,"explosion")
+			handle_train_car_hit(entity)
+		end,
+		["destroyed"]=function(entity,cause)
+			spawn_effect_centered_on("explosion",entity)
 		end
 	},
 	["train_caboose"]={
@@ -1102,14 +1219,18 @@ entity_library={
 		["has_grid_movement"]=true,
 		["grid_move_pattern"]={1,1,1,1,1,1},
 		["tile_update_frame"]=2,
+		["projectile_armor"]=1,
 		["init"]=function(entity,args)
-			add(directives,{
-				["x"]=entity.x,
-				["z"]=entity.z,
-				["type"]="move",
-				["dir"]=entity.facing,
-				["is_alive"]=true
-			})
+			if args.add_directive then
+				add(directives,{
+					["x"]=entity.x,
+					["z"]=entity.z,
+					["type"]="move",
+					["dir"]=entity.facing,
+					["is_alive"]=true
+				})
+			end
+			entity.next_car=nil
 		end,
 		["pre_move_update"]=function(entity)
 			local i
@@ -1117,19 +1238,33 @@ entity_library={
 				if directives[i].x==entity.x and directives[i].z==entity.z then
 					if directives[i].type=="move" then
 						move_entity_on_grid(entity,directives[i].dir)
+					elseif directives[i].type=="resume_play" then
+						freeze(entity)
+						train_car_to_kill=nil
+						-- reassociate the cars to the right next cars
+						local car=player_entity
+						while car.next_car!=nil do
+							car.has_hurtbox=true
+							if not car.next_car.is_alive or car.next_car.frames_to_death>0 then
+								car.next_car=entity
+							end
+							car=car.next_car
+						end
+						freeze_frames=2
 					end
 					directives[i].is_alive=false
 				end
 			end
 			directives=filter_list(directives,is_alive)
 		end,
-		["update"]=function(entity)
-		end,
 		["on_hit_wall"]=function(entity)
-			destroy_entity(entity,0,"explosion")
+			-- destroy_entity(entity)
 		end,
 		["on_hit_by"]=function(entity,hitter)
-			destroy_entity(entity,0,"explosion")
+			-- destroy_entity(entity)
+		end,
+		["destroyed"]=function(entity,cause)
+			spawn_effect_centered_on("explosion",entity)
 		end
 	},
 	["shrub"]={
@@ -1138,7 +1273,10 @@ entity_library={
 			["default"]={26}
 		},
 		["on_hit_by"]=function(entity,hitter)
-			destroy_entity(entity,0,"explosion")
+			destroy_entity(entity)
+		end,
+		["destroyed"]=function(entity,cause)
+			spawn_effect_centered_on("explosion",entity)
 		end
 	},
 	["coin"]={
@@ -1147,7 +1285,10 @@ entity_library={
 			["default"]={32,33,34,35}
 		},
 		["on_hit_by"]=function(entity,hitter)
-			destroy_entity(entity,0,"coin_pickup")
+			destroy_entity(entity)
+		end,
+		["destroyed"]=function(entity,cause)
+			spawn_effect_centered_on("coin_pickup",entity)
 		end
 	},
 	["spear-thrower"]={
@@ -1180,7 +1321,10 @@ entity_library={
 			end
 		end,
 		["on_hit_by"]=function(entity,hitter)
-			destroy_entity(entity,5,"explosion")
+			destroy_entity(entity)
+		end,
+		["destroyed"]=function(entity,cause)
+			spawn_effect_centered_on("explosion",entity)
 		end
 	},
 	["player_bullet"]={
@@ -1203,7 +1347,7 @@ entity_library={
 			if hittee.projectile_armor>=0 then
 				destroy_entity(entity)
 				if hittee.projectile_armor>0 then
-					spawn_effect_centered_on_entity("deflected",hittee)
+					spawn_effect_centered_on("deflected",hittee)
 					return false
 				end
 			end
@@ -1228,13 +1372,18 @@ entity_library={
 			if hittee.projectile_armor>=0 then
 				destroy_entity(entity)
 				if hittee.projectile_armor>0 then
-					spawn_effect_centered_on_entity("deflected",hittee)
+					spawn_effect_centered_on("deflected",hittee)
 					return false
 				end
 			end
 		end,
 		["on_hit_by"]=function(entity,hitter)
-			destroy_entity(entity)
+			destroy_entity(entity,"projectile")
+		end,
+		["destroyed"]=function(entity,cause)
+			if cause=="projectile" then
+				spawn_effect_centered_on("poof",entity)
+			end
 		end
 	},
 	["clothesline"]={
@@ -1267,7 +1416,10 @@ entity_library={
 			end
 		end,
 		["on_hit_by"]=function(entity,hitter)
-			destroy_entity(entity,0,"poof")
+			destroy_entity(entity)
+		end,
+		["destroyed"]=function(entity,cause)
+			spawn_effect_centered_on("poof",entity)
 		end
 	},
 	["clothes"]={
@@ -1289,17 +1441,20 @@ entity_library={
 		end,
 		["update"]=function(entity)
 			if entity.next_neighbor!=nil and not entity.next_neighbor.is_alive then
-				destroy_entity(entity,0,"flying_clothes",{["frame_offset"]=entity.frame_offset})
+				destroy_entity(entity)
 			elseif entity.prev_neighbor!=nil and not entity.prev_neighbor.is_alive then
-				destroy_entity(entity,0,"flying_clothes",{["frame_offset"]=entity.frame_offset})
+				destroy_entity(entity)
 			end
 		end,
 		["on_hit"]=function(entity,hittee)
-			destroy_entity(entity,0,"flying_clothes",{["frame_offset"]=entity.frame_offset})
+			destroy_entity(entity)
 			return false
 		end,
 		["on_hit_by"]=function(entity,hitter)
-			destroy_entity(entity,0,"flying_clothes",{["frame_offset"]=entity.frame_offset})
+			destroy_entity(entity)
+		end,
+		["destroyed"]=function(entity,cause)
+			spawn_effect_centered_on("flying_clothes",entity,{["frame_offset"]=entity.frame_offset})
 		end
 	},
 	["tall_grass"]={
@@ -1312,11 +1467,14 @@ entity_library={
 		["init"]=function(entity,args)
 		end,
 		["on_hit"]=function(entity,hittee)
-			destroy_entity(entity,0,"shredded_grass")
+			destroy_entity(entity)
 			return false
 		end,
 		["on_hit_by"]=function(entity,hitter)
-			destroy_entity(entity,0,"shredded_grass")
+			destroy_entity(entity)
+		end,
+		["destroyed"]=function(entity,cause)
+			spawn_effect_centered_on("shredded_grass",entity)
 		end
 	},
 	["trap"]={
@@ -1339,7 +1497,7 @@ entity_library={
 					entity.render_priority=0
 					entity.projectile_armor=1
 					set_entity_action(entity,"triggered",true)
-					spawn_effect_centered_on_entity("dirt_blast",entity)
+					spawn_effect_centered_on("dirt_blast",entity)
 				end
 			end
 		end,
@@ -1383,18 +1541,20 @@ entity_library={
 		end,
 		["on_hit_by"]=function(entity,hitter)
 			entity.hp-=1
-			spawn_effect_centered_on_entity("dirt_blast",entity)
+			spawn_effect_centered_on("dirt_blast",entity)
 			if entity.hp==1 then
 				set_entity_action(entity,"damaged",true)
 				entity.wiggle_frames=5
 			elseif entity.hp==0 then
-				destroy_entity(entity,5)
+				entity.wiggle_frames=5
+				destroy_entity(entity)
 			end
 		end
 	},
 	["falling_boulder_spawner"]={
 		["hit_channel"]=nil,
 		["animation"]=nil,
+		["casts_shadows"]=false,
 		["init"]=function(entity)
 			entity.frames_between_spawns=80
 			entity.frames_to_spawn=entity.frames_between_spawns
@@ -1424,7 +1584,7 @@ entity_library={
 			entity.y=0
 			if entity.vy<0 then
 				entity.vy=1
-				spawn_effect_centered_on_entity("dirt_blast",entity)
+				spawn_effect_centered_on("dirt_blast",entity)
 				spawn_entity_at_tile("damaging_impact",entity.col,entity.row)
 			end
 			return false
@@ -1440,10 +1600,100 @@ entity_library={
 		["init"]=function(entity)
 			entity.has_hurtbox=false
 		end
+	},
+	["friend"]={
+		["hit_channel"]="pickup",
+		["animation"]={
+			["default"]={128,128,129,129}
+		},
+		["init"]=function(entity,args)
+			entity.friend_type=args.friend_type
+			entity.frame_offset=16*entity.friend_type
+			spawn_effect_centered_on("target_arrow",entity,{
+				["parent"]=entity
+			})
+		end,
+		["on_hit_by"]=function(entity,hitter)
+			if hitter.type=="train_car" and hitter.friend==nil then
+				destroy_entity(entity)
+				hitter.friend=spawn_entity_at_pos("friend_in_cart",hitter.x,hitter.z,hitter.facing,{
+					["friend_type"]=entity.friend_type,
+					["parent_cart"]=hitter
+				})
+			end
+		end
+	},
+	["friend_in_cart"]={
+		["hit_channel"]=nil,
+		["casts_shadows"]=false,
+		["animation"]={
+			["default"]={
+				["front"]={132,132,133,133},
+				["back"]={134,134,135,135},
+				["sides"]={130,130,131,131}
+			}
+		},
+		["init"]=function(entity,args)
+			entity.parent_cart=args.parent_cart
+			entity.friend_type=args.friend_type
+			entity.frame_offset=16*entity.friend_type
+		end,
+		["update"]=function(entity)
+			if not entity.parent_cart.is_alive then
+				destroy_entity(entity)
+			end
+		end,
+		["destroyed"]=function(entity)
+			spawn_effect_centered_on("friend_death",entity,{
+				["friend_type"]=entity.friend_type
+			})
+		end
+	},
+	["car_expander"]={
+		["hit_channel"]="pickup",
+		["animation"]={
+			["default"]={86}
+		},
+		["on_hit_by"]=function(entity,hitter)
+			if hitter.next_car!=nil then
+				destroy_entity(entity)
+				local next_car=hitter.next_car
+				local new_car=spawn_entity_at_pos("train_car",next_car.x,next_car.z,hitter.facing,{
+					["next_car"]=next_car
+				})
+				new_car.y=next_car.y
+				new_car.vx=next_car.vx
+				new_car.vy=next_car.vy
+				new_car.vz=next_car.vz
+				new_car.col=next_car.col
+				new_car.row=next_car.row
+				new_car.move_dir=next_car.move_dir
+				new_car.move_frames_left=next_car.move_frames_left
+				new_car.is_on_grid=next_car.is_on_grid
+				hitter.next_car=new_car
+				-- and finally, freeze everything after the new car
+				while next_car!=nil do
+					next_car.freeze_frames+=#next_car.grid_move_pattern
+					next_car=next_car.next_car
+				end
+			end
+		end
 	}
 }
 
 effect_library={
+	["target_arrow"]={
+		["animation"]={56,56,56,57,57,57},
+		["init"]=function(effect,args)
+			effect.parent=args.parent
+		end,
+		["update"]=function(effect)
+			effect.x=effect.parent.x
+			effect.y=effect.parent.y+8
+			effect.z=effect.parent.z
+			effect.is_alive=effect.parent.is_alive
+		end,
+	},
 	["coin_pickup"]={
 		["animation"]={32,48,49,50},
 		["frames_to_death"]=20,
@@ -1498,20 +1748,27 @@ effect_library={
 	},
 	["shredded_grass"]={
 		["animation"]={120,121,121},
-		["frames_to_death"]=15,
-		["init"]=function(effect,args)
-			-- effect.vx=0.2
-			-- effect.vy=1.6
-		end,
-		["update"]=function(effect)
-			-- effect.vy-=0.1
-			-- effect.x+=effect.vx
-			-- effect.y+=effect.vy
-		end
+		["frames_to_death"]=15
 	},
 	["deflected"]={
 		["animation"]={115,116,117},
 		["frames_to_death"]=15
+	},
+	["friend_death"]={
+		["animation"]={129},
+		["frames_to_death"]=20,
+		["init"]=function(effect,args)
+			effect.friend_type=args.friend_type
+			effect.frame_offset=16*effect.friend_type
+			effect.vy=1
+		end,
+		["update"]=function(effect)
+			effect.vy-=0.1
+			effect.y+=effect.vy
+		end,
+		["destroyed"]=function(effect)
+			spawn_effect_centered_on("poof",effect)
+		end
 	}
 }
 
@@ -1530,30 +1787,54 @@ levels={
 				end
 			end
 		end,
-		["player_spawn"]={8,5,2}, --col,row,num_cars
+		["player_spawn"]={12,12,8}, --col,row,num_cars
 		["entity_list"]={
 			-- type,col,row,facing,init_args
-			{"coin",3,15},
-			{"coin",3,16},
-			{"coin",3,17},
-			{"coin",11,13},
-			{"coin",11,16},
-			{"coin",11,17},
-			{"coin",12,13},
-			{"coin",12,16},
-			{"coin",12,17},
-			{"coin",13,13},
-			{"coin",13,16},
-			{"coin",13,17},
-			{"spear-thrower",17,16,1},
-			{"spear-thrower",10,19,2},
-			{"clothesline",12,18,3,{["length"]=7}},
-			{"clothesline",4,14,2,{["length"]=7}},
-			{"falling_boulder_spawner",17,14,1}
+			-- {"coin",3,15},
+			-- {"coin",3,16},
+			-- {"coin",3,17},
+			-- {"coin",11,13},
+			-- {"coin",11,16},
+			-- {"coin",11,17},
+			-- {"coin",12,13},
+			-- {"coin",12,16},
+			-- {"coin",12,17},
+			-- {"coin",13,13},
+			-- {"coin",13,16},
+			-- {"coin",13,17},
+			{"spear-thrower",21,16,1},
+			{"spear-thrower",21,18,1},
+			{"spear-thrower",21,20,1},
+			-- {"spear-thrower",10,19,2},
+			-- {"clothesline",12,18,3,{["length"]=7}},
+			-- {"clothesline",4,14,2,{["length"]=7}},
+			-- {"falling_boulder_spawner",17,14,1},
+
+			{"friend",4,10,4,{["friend_type"]=0}},
+			{"friend",6,10,4,{["friend_type"]=1}},
+			{"friend",8,10,4,{["friend_type"]=2}},
+			{"friend",10,10,4,{["friend_type"]=3}},
+			{"friend",5,13,4,{["friend_type"]=0}},
+			{"friend",7,13,4,{["friend_type"]=1}},
+			{"friend",9,13,4,{["friend_type"]=2}},
+			{"friend",11,13,4,{["friend_type"]=3}},
+			{"car_expander",16,13},
+			{"car_expander",16,14},
+			{"car_expander",16,15},
+			{"car_expander",16,16},
+			{"car_expander",17,13},
+			{"car_expander",17,14},
+			{"car_expander",17,15},
+			{"car_expander",17,16},
+			{"car_expander",18,13},
+			{"car_expander",18,14},
+			{"car_expander",18,15},
+			{"car_expander",18,16},
 		},
 		["tile_library"]={
 			-- icon={tile_frames,tile_is_flipped,tile_is_solid,{right_wall,left_wall,bottom_wall,top_wall},{entity_type,entity_facing,entity_args}}
 			["."]={{7},false,true}, -- grass
+			[","]={{9},false,true}, -- grass/dirt
 			["="]={{9},false,true}, -- bridge
 			["("]={{25},false}, -- bridge supports
 			[")"]={{25},true}, -- bridge supports
@@ -1577,29 +1858,53 @@ levels={
 			["h"]={{119},false}
 		},
 		["tile_map"]={
-			"      .......        ",
-			"      ###=###        ",
-			"      ***=***        ",
-			"         =           ",
-			"         =    {.o    ",
-			"ooo.====tttttt[..    ",
-			"o...(  )tttttt[..    ",
-			"xxdde   oobbtt[..====",
-			"xx..f   oo.ttt[..()()",
-			"xx..f   tttttt[..    ",
-			"##..====ttt.j.[....} ",
-			"**##(  )#.....[####] ",
-			"~~**f   *xxx......dde",
-			"  ~~g   ~####=######f",
-			"    h    ****=******f",
-			"         ~~~~=~~~~~~g",
-			"   .   =======      h",
-			"   #   =()()()       ",
-			" . * . =             ",
-			" # * # =             ",
-			" * ~ ~ =             ",
-			" *     =             ",
-			" *     =             "
+			"  ,,,,              ",
+			",,,,,,,,,,,       ,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			".....................",
+			".....................",
+			".....................",
+			".....................",
+			".....................",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,  ,,,,,,,,,,,,,,",
+			",,,,,  ,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,",
+			",,,,,,,,,,,,,,,,,,,,,"
+			-- "      .......        ",
+			-- "      ###=###        ",
+			-- "..... ***=***        ",
+			-- ".....    =           ",
+			-- ".....    =    {.o    ",
+			-- "ooo.====tttttt[..    ",
+			-- "o...(  )tttttt[..    ",
+			-- "xx..e   oobbtt[..====",
+			-- "xx..f   oo.ttt[..()()",
+			-- "xx..f   tttttt[..    ",
+			-- "##..====ttt.j.[....} ",
+			-- "**##(  )#.....[####] ",
+			-- "~~**f   *xxx......dde",
+			-- "  ~~g   ~####=######f",
+			-- "    h    ****=******f",
+			-- "         ~~~~=~~~~~~g",
+			-- "   .   =======      h",
+			-- "   #   =()()()       ",
+			-- " . * . =             ",
+			-- " # * # =             ",
+			-- " * ~ ~ =             ",
+			-- " *     =             ",
+			-- " *     =             "
 		}
 	}
 }
@@ -1629,77 +1934,77 @@ __gfx__
 000a9000000a9000000990000009a000007777000007777000000707022222200444242003535350088000000088000008808800000000000001280000018000
 00000000000000000000000000000000000000000000770000000070022222200444222003535350000000000000000000000000000000000001080000018000
 000000000000000000000000000000000000000000aaaa0080000008000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000099000000000000a0000a008000080000000000003000000000000000000000000000000000000000000000000000000000000
-00077000000aa00000a00a000098890000700700a000000a0000000002f2f2f00bb3bbb00000000000009900000940000f000f000f000f0000f1900000f10000
-0077770000a00a00000000000988889000077000a000000a000000000f2f2f200bbbbbb000000000099994000099990019999910199999100001940000014000
-0077770000a00a00000000000988889000077000a000000a000000000ffffff003b3bbb000000000049999000999990004999400049994000001990000019000
-0077770000a00a00000000000098890000700700a000000a000000000ffffff00b3bb3b0000000000990990004990000099099000990990000f1900000f10000
-00077000000aa00000a00a0000099000000000000a0000a00800008000f0f0f00bbbb3b000000000099000000099000009909900000000000001490000019000
-000000000000000000000000000000000000000000aaaa00800000080f0f0f000bbbbbb000000000000000000000000000000000000000000001090000019000
+00000000000000000000000000099000000000000a0000a0080000800000000000000000000ee000000000000000000000000000000000000000000000000000
+00077000000aa00000a00a000098890000700700a000000a0000000002f2f2f000088000000ee00000009900000940000f000f000f000f0000f1900000f10000
+0077770000a00a00000000000988889000077000a000000a000000000f2f2f2000088000000ee000099994000099990019999910199999100001940000014000
+0077770000a00a00000000000988889000077000a000000a000000000ffffff0000880000eeeeee0049999000999990004999400049994000001990000019000
+0077770000a00a00000000000098890000700700a000000a000000000ffffff00888888000eeee000990990004990000099099000990990000f1900000f10000
+00077000000aa00000a00a0000099000000000000a0000a00800008000f0f0f000888800000ee000099000000099000009909900000000000001490000019000
+000000000000000000000000000000000000000000aaaa00800000080f0f0f000008800000000000000000000000000000000000000000000001090000019000
 00000000000000000000000000000000000000000000000000000000000000000000000009900990000000000000000000000000000700000000000000000000
-0010000000010000010116700001000000100000000000000000000000000000000000000999999000ddd000003333007000000700f700000000000000000000
-000ccc00000ccc0044ccc467000ccc00000c1c1000000000044444400000000000000000e499994e0ddddd00035eee30f722227f00ff70000000000000000000
-00c11c1100ccccc00c11c11000ccccc000c17c7100006700024242400000000000000000eee7e7ee0dd7d7003522e223f788887f008f77800000000000000000
-00cc7c7000c11c110cc7c70000c11c1100ceccce004446700cccccc00cc00000000000000ee6e6e00dd6d6d035eeeee3f788887f008f87800000000000000000
-00ccccc000cc7c700ccccc0000ccccc100c11cc1000067000cccccc00cccc000000000000eeeeee00dddddd0358222830f8888f00008f8700000000000000000
-001c1c1001ccccc101c1c100001c1c1100111c11000000000cccccc00ccccc00000000000288882002888820052eee20008888000000fff00000000000000000
+0010000000010000010116700001000000100000000000000000000000000000000000000999999000ddd000003333007000000700f700000aaaaaa00aaaaaa0
+000ccc00000ccc0044ccc467000ccc00000c1c1000000000044444400000000000000000e499994e0ddddd00035eee30f722227f00ff70000977799009799990
+00c11c1100ccccc00c11c11000ccccc000c17c7100006700024242400000000000000000eee7e7ee0dd7d7003522e223f788887f008f77800978789009789990
+00cc7c7000c11c110cc7c70000c11c1100ceccce004446700cccccc00cc00000000000000ee6e6e00dd6d6d035eeeee3f788887f008f87800977889009789990
+00ccccc000cc7c700ccccc0000ccccc100c11cc1000067000cccccc00cccc000000000000eeeeee00dddddd0358222830f8888f00008f8700978799009777890
+001c1c1001ccccc101c1c100001c1c1100111c11000000000cccccc00ccccc00000000000288882002888820052eee20008888000000fff00989889009988890
 00110110011c1c11001100000011000000000000000000000bbbbbb00ccccc000000000008800880088008800530053000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000004444000044440000444400003333000033330000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000044ccc40044ccc40044eee40033eee30035eee300000000000cccc000000000000000000000000000000000000000000000000000000000000000000
-00ee0ee04433c3344411c1144422e2243322e2233522e2230000000000cccc000000000000000000000000000000000000000000000000000000000000000000
-0000000044ceeec444ccccc444eeeee433eeeee335eeeee30000000000cccc000000000000000000000000000000000000000000000000000000000000000000
-000eee0044e222e444c111c44482228435822283358222830000000000cccc000000000000000000000000000000000000000000000000000000000000000000
-00e000e0042eee20041ccc10042eee20052eee20052eee200000000000cccc000000000000000000000000000000000000000000000000000000000000000000
-0000000004400440044004400440044005500550053005300000000000cccc000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000d50000000000000000000000000000000000000000000000000000000000000000000000000000000000000088888800088880000000000
-00d6dd0000d65d00d5d005d000d6dd000055dd00005555000000000000000000000000008000000800000000000000000aa887a0888888880888888000000000
-0d6ddd500d6d55d0d5500d5d0d6d5d50055dddd00d55d5500000000000cccc0000000000088008800000000000000000aa888a7a888888880888888000000000
-0ddddd500dddd550550005550ddddd5005d5d6d00ddd5d500000000000cccc0000777700080000800000000000000000a888aa78088888800088880000000000
-0dd5d5500dd555d0005d00500dd5d5500555d6d00d6ddd500000000000cfcf00007007000000000000000000000000008888aaa8050000500050050000000000
-0d5ddd500d5d5d5000d550000d5dd550055dddd0056d5d500000000000cccc000070070000000000000000000000000088aaaa88444000440440044000000000
-0dd5555005d5d5500055500000d555000055dd0000dddd000000000000fcfc00007777000800008000000000000000000aaaa880444444400444440000000000
-0b5555b00b5555b0000000000000000000000000000000000000000000cfcf000000000088800888000000000000000000a88800044444000044400000000000
-00000000000000000077770000000000000000000000000700000000000000000003003000003000000000000000000000000000000000000000000000000000
-00000000000000000773377000000000000000700c00007000000000000000000030b30003030000000000000000000000000000000000000000000000000000
-047777400470074007377370000770000000770000c000000000000000ffff00030b30b030b00b00000000000000000005000050050000500000000000000000
-077337700777777007377370007007000000c700000000000000000000ffff0000b00b000b00b00000000000000000004ff000504ff000500000000000000000
-07377370077337700773377000700700007c0000000000000000000000f0f0000005b000000005000000000000000000444044ff444044ff0000000000000000
-077337700737737007777770000770000077000000000c0000000000000f0f000050305000005005000000000000000044444440444444400000000000000000
-0477774004733740047777400000000007000000070000c000000000000000000503050000300050000000000000000025454520254545200000000000000000
-0455554004555540045555400000000000000000700000000000000000f0f0000030500003000000000000000000000002222200022222000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000000000000bb000000000000000000000000000000000000000000000000000
+0000000000444400004444000044440000333300003333000aaaaaa00000000000000000003bb30000dddd0000dddd0000dddd0000dddd000aaaaaa00aaaaaa0
+00000000044ccc40044ccc40044eee40033eee30035eee300977789000cccc000000000004bbbb4007ccc700007979000d7eeed000777b000779779007999790
+00ee0ee04433c3344411c1144422e2243322e2233522e2230978889000cccc0000000000044bb4400717c710074747400e78eee00b7373b00787878007879780
+0000000044ceeec444ccccc444eeeee433eeeee335eeeee30977899000cccc000000000004f33f4007171710074747400e78eee00b7733b00787878007878780
+000eee0044e222e444c111c44482228435822283358222830978889000cccc00000000000b4ff4b0017171c0074947400e7778e00b737bb00789878008787890
+00e000e0042eee20041ccc10042eee20052eee20052eee200977789000cccc000000000000344300001c11000049940000e88800003b33000889988009898890
+0000000004400440044004400440044005500550053005300000000000cccc000000000000300300000000000000000000000000000000000000000000000000
+00000000000000000d50000000000000000000000000000000000000000000000000000000000000000bbb000000000000000000088888800088880000000000
+00d6dd0000d65d00d5d005d000d6dd000055dd00005555000000000000000000000000008000000800bb33b0000000000aa887a0888888880888888000000000
+0d6ddd500d6d55d0d5500d5d0d6d5d50055dddd00d55d5500000000000cccc000000000008800880044bbbb000000000aa888a7a888888880888888000000000
+0ddddd500dddd550550005550ddddd5005d5d6d00ddd5d500000000000cccc00007777000800008044433bb000000000a888aa78088888800088880000000000
+0dd5d5500dd555d0005d00500dd5d5500555d6d00d6ddd500000000000cfcf00007007000000000044433300000000008888aaa8050000500050050000000000
+0d5ddd500d5d5d5000d550000d5dd550055dddd0056d5d500000000000cccc000070070000000000444333300000000088aaaa88444000440440044000000000
+0dd5555005d5d5500055500000d555000055dd0000dddd000000000000fcfc000077770008000080044bb330000000000aaaa880444444400444440000000000
+0b5555b00b5555b0000000000000000000000000000000000000000000cfcf0000000000888008880003b0000000000000a88800044444000044400000000000
+0000000000000000007777000000000000000000000000070000000000000000000300300000300000bbbb0000bbbb0000000000000000000000000000000000
+00000000000000000773377000000000000000700c00007000000000000000000030b300030300000bbbbbb00bbbbbb000000000000000000000000000000000
+047777400470074007377370000770000000770000c000000000000000ffff00030b30b030b00b0003bbbb30433bb33405000050050000500000000000000000
+077337700777777007377370007007000000c700000000000000000000ffff0000b00b000b00b0000344443043bbbb344ff000504ff000500000000000000000
+07377370077337700773377000700700007c0000000000000000000000f0f0000005b0000000050004f44f40443bb344444044ff444044ff0000000000000000
+077337700737737007777770000770000077000000000c0000000000000f0f000050305000005005344ff4434433334444444440444444400000000000000000
+0477774004733740047777400000000007000000070000c00000000000000000050305000030005034f44f4303bbbb3025454520254545200000000000000000
+0455554004555540045555400000000000000000700000000000000000f0f0000030500003000000004ff4000300003002222200022222000000000000000000
+000bb000000bb0000000000000000000000000000000000000000000000000000000000000000000000000000000000000bbbb000044440000bbbb0000000000
+003bb30000bbbb00000000000000bb0000000000000bbb0000000000000bb000000000000000000000000000000000000bbbbbb0044444400bbbbbb000355300
+04bbbb40043bb3400000bb00000b3bb0000bbb0000b3b3b0003bb30000bbbb0000000000000000000000000000000000433bb3344444444403bbbb3003555530
+0f4bb4f00f4334f00043bbb0004bbbe000b3b3b0003beb0000bbbb000b3bb3b00000000000000000000000000000000043bbbb34444554440344443003444430
+04333340b33bb33b0f43b3b00f4333000f3bbb000f33b30003f44f3003f44f3000000000000000000000000000000000443bb3444455554404f44f4004f44f40
+0b3bb3b0043bb34004f33bb004fb33000443334004433340044ff440044ff440000000000000000000000000000000000433334004355340344ff443044ff440
+003bb300003333000f4b33000f4b330003bbbb3003bbbb3004f44f4004f44f400000000000000000000000000000000003bbbb3005bbbb5034f44f4304f44f40
+0030030000300300004b300000433000000bb000000bb000000ff000000ff000000000000000000000000000000000003000000300000000004ff400004ff400
+0000cc000c00c9900000000000000000000000000000000000000000000000000000000000000000000000000000000000cccc00c0c99c0c00cccc0000cccc00
+000c19900c0c1e00000000000c0000900000000000099000000000000009900000000000000000000000000000000000001cc100c09ee90c00cccc0000cccc00
+000cc990ccccc9e0000ccc000cccc9e000cccc00009ee90000cccc00000990000000000000000000000000000000000009cccc90c9e88e9c0cccccc00cccccc0
+00cccc90cccccc9000c1c990ccc1c800001cc1000ceeeec000cccc0000cccc00000000000000000000000000000000000c9999c0c198891c0cccccc00cccccc0
+00ccffc00cccffc00cccc990cc1cc9800c9999c00c9889c00cccccc000cccc000000000000000000000000000000000001f99f1cc1f99f1ccccccccccccccccc
+01ccffc00ccfffc00cc1ff90ccc1cc900cc99cc00cf99fc00cccccc00cccccc000000000000000000000000000000000c1ffff1c0cffffc0c1cccc1cc1cccc1c
+01c9ff9001f9ff900ccfff000cccff000cffffc00cffffc00c1cc1c0cc1cc1cc00000000000000000000000000000000ccffffc000ffff00cc1cc1cccc1cc1cc
+00949949009499490c1ff00000fff000000ff000000ff000000cc000000cc000000000000000000000000000000000000c0000c000000000c000000cc000000c
+00900900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000009000090000000000090090000900900
+009ff900095ff950090000900000000009000090000000000000000005000050000000000000000000000000000000000f9009f09f009f00d09ff90dd09ff90d
+0059f950009959000f9009f09f009f000f9009f09f009f00090000900050050000000000000000000000000000000000099ff99009ff99900999999009999990
+4099590004598950099ff99009ff9990099ff99009ff999009900990099ff990000000000000000000000000000000000f59f9500d99599dd99ff99dd99ff99d
+44599050440990000f59f9500d99599d0f59f9500d99599d099ff99009f99f90000000000000000000000000000000000d99599d099585900999999009999990
+04f9990040f999000d99599d099585900d99599d09958590099999900f9999f000000000000000000000000000000000099595900d99999d009ff900009ff900
+0f9999004f999900099595900d99999d099595900d99999d0999999009999990000000000000000000000000000000000d99990d009999000099f9000099f900
+04490900044909000d99990d009999000d99990d0099990000999900009999000000000000000000000000000000000009000090090000900900009009000090
+05500550000550000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffff0000ffff0000ffff0000ffff00
+0e5ff5e0055ee550000000000000000000000000000110000000000000011000000000000000000000000000000000000f7ff7f00ffeeff00ffffff00ffffff0
+005555000e5555e00055f50000f55110005ff500005555000055550000555500000000000000000000000000000000000f7f7ff00feeeef00f7ff7f00f7ff7f0
+00f55f0000ffff0005555f500f515ee005155150005ee5000555555000155100000000000000000000000000000000000fff7ff004e77e400f7f7ff00f7f7ff0
+0ffffff00f5ff5f00ee51510055558800e5555e0055885500e5555e0055555500000000000000000000000000000000004ffff400fe77ef004ff7f4004ff7f40
+0f5ff5f00ffffff00ff5555005e555000ff11ff00ef55fe00ffffff00effffe0000000000000000000000000000000000f4444f00ff22ff00ffffff00ffffff0
+00ffff0000ffff000fff51100eefff000ffffff00ffffff00ffffff00ffffff00000000000000000000000000000000000ffff0000ffff0000ffff0000ffff00
+005005000050050000fff00000fff000000ff000000ff000000ff000000ff0000000000000000000000000000000000000000000000000000000000000000000
 000000000000000000bbbb00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000009a9a9a003b3b3b0
 00bbbb0000bbbb00033bb33000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a9a99900b3b3330
 0bbbbbb00b9bb9b00bbaabb00455454005354440044454400dcccdd00cd55d500dd555d0054544400544444000000000000000000000000009a9a9a003b3b3b0
