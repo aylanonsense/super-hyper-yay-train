@@ -48,6 +48,7 @@ game_frame=-1
 transition_effect=nil
 freeze_frames=0
 slow_mo_frames=0
+hit_resolution_frames=0
 camera_pan_z=0
 level=nil
 world_num=1
@@ -65,6 +66,7 @@ function reset_game_state()
 	game_frame=-1
 	freeze_frames=0
 	slow_mo_frames=0
+	hit_resolution_frames=0
 	camera_pan_z=0
 	min_level_row=nil
 	max_level_row=nil
@@ -187,6 +189,8 @@ function instantiate_entity(type)
 		["vz"]=0,
 		["facing"]=4,
 		["is_alive"]=true,
+		["is_mobile"]=true,
+		["is_frozen"]=false,
 		["wiggle_frames"]=0,
 		["frames_to_death"]=def.frames_to_death or 0,
 		["death_cause"]=nil,
@@ -281,6 +285,10 @@ function pre_update_entity(entity)
 end
 
 function update_entity(entity)
+	if entity.is_frozen then
+		return
+	end
+
 	-- update timers
 	entity.wiggle_frames-=1
 	entity.curr_anim_frames+=1
@@ -299,18 +307,24 @@ function update_entity(entity)
 	end
 
 	-- move the entity
-	entity.x+=entity.vx
-	entity.y+=entity.vy
-	entity.z+=entity.vz
+	if entity.is_mobile then
+		entity.x+=entity.vx
+		entity.y+=entity.vy
+		entity.z+=entity.vz
+	end
 
 	-- update the entity's col/row
-	local update_frame=1
+	local update_frame=4
 	if entity.hit_channel=="player" or entity.hit_channel=="player_projectile" then
-		update_frame=2
+		update_frame=5
 	end
-	if game_frame%3==update_frame or entity.vx>2 or entity.vx<-2 or entity.vz>2 or entity.vz<-2 then
+	if game_frame%6==update_frame or entity.vx>2 or entity.vx<-2 or entity.vz>2 or entity.vz<-2 then
 		entity.col=1+flr(entity.x/6+0.5)
 		entity.row=1+flr(entity.z/6+0.5)
+	end
+	tile=get_tile_under_entity(entity)
+	if tile and tile.has_wall[entity.facing] then
+		destroy_entity(entity,"wall")
 	end
 
 	-- call the entity's update method
@@ -351,7 +365,9 @@ function check_for_collisions(hitter_channel,hittee_channel)
 		local j
 		-- check against each entity in the second list...
 		for j=1,#entities_by_hit_channel[hittee_channel] do
-			check_for_collision(entities_by_hit_channel[hitter_channel][i],entities_by_hit_channel[hittee_channel][j])
+			if hitter_channel!=hittee_channel or i!=j then
+				check_for_collision(entities_by_hit_channel[hitter_channel][i],entities_by_hit_channel[hittee_channel][j])
+			end
 		end
 	end
 end
@@ -414,13 +430,28 @@ function update_game()
 
 	game_frame+=1
 
-	-- pan the camera upwards
-	if game_frame%camera_pan_rate==0 then
+	if hit_resolution_frames>0 then
+		hit_resolution_frames-=1
+		if hit_resolution_frames<=0 then
+			local car=player_entity
+			local last_living_car=car
+			while car.next_car do
+				if car.is_alive then
+					last_living_car=car
+				end
+				car=car.next_car
+			end
+			last_living_car.next_car=car
+			car.prev_car=last_living_car
+			foreach(entities,function(entity)
+				entity.is_frozen=false
+			end)
+		end
+	-- pan the camera upwards and load rows
+	elseif game_frame%camera_pan_rate==0 then
 		camera_pan_z+=1
+		check_for_row_load()
 	end
-
-	-- load rows
-	check_for_row_load()
 
 	-- update entities
 	foreach(entities,pre_update_entity)
@@ -433,9 +464,10 @@ function update_game()
 	check_for_collisions("enemy_projectile","obstacle")
 	check_for_collisions("enemy_projectile","player")
 	check_for_collisions("obstacle","player")
+	check_for_collisions("enemy","player")
 	check_for_collisions("obstacle","enemy")
 	check_for_collisions("player","pickup")
-	check_for_collisions("enemy","player")
+	check_for_collisions("player","player")
 end
 
 function _update()
@@ -503,8 +535,10 @@ function recursively_update_train_dir(car,dir)
 	if car.next_car then
 		recursively_update_train_dir(car.next_car,car.facing)
 	end
-	car.facing=dir
-	car.vx,car.vz=dir_to_vec(dir)
+	if not car.is_frozen then
+		car.facing=dir
+		car.vx,car.vz=dir_to_vec(dir)
+	end
 end
 
 function draw_transition(color,frames_left,is_reversed)
@@ -709,6 +743,7 @@ entity_types={
 		["gravity"]=0.25,
 		["init"]=function(entity,args)
 			entity.next_car=args.next_car
+			entity.next_car.prev_car=entity
 			entity.pressed_dir=0
 			entity.next_pressed_dir=0
 			entity.prev_btns={}
@@ -741,14 +776,16 @@ entity_types={
 			-- change directions
 			if game_frame%6==0 then
 				recursively_update_train_dir(entity.next_car,entity.facing)
-				if entity.pressed_dir!=0 then
-					entity.facing=entity.pressed_dir
-					entity.pressed_dir=entity.next_pressed_dir
-					entity.next_pressed_dir=0
-				elseif held_dir!=0 then
-					entity.facing=held_dir
+				if not entity.is_frozen then
+					if entity.pressed_dir!=0 then
+						entity.facing=entity.pressed_dir
+						entity.pressed_dir=entity.next_pressed_dir
+						entity.next_pressed_dir=0
+					elseif held_dir!=0 then
+						entity.facing=held_dir
+					end
+					entity.vx,entity.vz=dir_to_vec(entity.facing)
 				end
-				entity.vx,entity.vz=dir_to_vec(entity.facing)
 			end
 		end,
 		["update"]=function(entity)
@@ -763,17 +800,22 @@ entity_types={
 			destroy_entity(entity)
 		end,
 		["on_destroyed"]=function(entity)
-			if entity.death_cause=="fall" then
-				spawn_entity_at_entity("poof",entity)
-			else
-				spawn_entity_at_entity("explosion",entity)
-			end
+			spawn_entity_at_entity("explosion",entity)
 			freeze_frames=15
-			slow_mo_frames=99
 			if life_count==0 then
 				transition_to_scene("game_over",40)
 			else
 				transition_to_scene("game",40)
+			end
+			local car=entity.next_car
+			local death_frames=2
+			while car do
+				car.is_mobile=false
+				car.has_hurtbox=false
+				car.has_hitbox=false
+				car.frames_to_death=death_frames
+				death_frames+=2
+				car=car.next_car
 			end
 		end,
 	},
@@ -783,31 +825,47 @@ entity_types={
 		["gravity"]=0.25,
 		["init"]=function(entity,args)
 			entity.next_car=args.next_car
+			entity.next_car.prev_car=entity
 		end,
 		["on_hit_by"]=function(entity)
 			destroy_entity(entity)
+			freeze_frames=15
+			-- freeze all entities
+			foreach(entities,function(entity)
+				entity.is_frozen=true
+			end)
+			-- destroy all cars after this car
+			local car=entity.next_car
+			local death_frames=2
+			hit_resolution_frames=6
+			while car.next_car do
+				car.is_frozen=false
+				car.is_mobile=false
+				car.has_hurtbox=false
+				car.has_hitbox=false
+				car.frames_to_death=death_frames
+				death_frames+=2
+				car=car.next_car
+				hit_resolution_frames+=6
+			end
+			hit_resolution_frames+=1
+			-- now deal with the engine
+			car.is_frozen=false
 		end,
 		["on_destroyed"]=function(entity)
-			if entity.death_cause=="fall" then
-				spawn_entity_at_entity("poof",entity)
-			else
-				spawn_entity_at_entity("explosion",entity)
-			end
+			spawn_entity_at_entity("explosion",entity)
 		end
 	},
 	["train_caboose"]={
 		["hit_channel"]="player",
 		["animation"]={["front"]={17},["back"]={33},["sides"]={1}},
 		["gravity"]=0.25,
+		["projectile_armor"]=1,
 		["on_hit_by"]=function(entity)
-			destroy_entity(entity)
+			-- destroy_entity(entity)
 		end,
 		["on_destroyed"]=function(entity)
-			if entity.death_cause=="fall" then
-				spawn_entity_at_entity("poof",entity)
-			else
-				spawn_entity_at_entity("explosion",entity)
-			end
+			spawn_entity_at_entity("explosion",entity)
 		end
 	},
 	["train_laser"]={
@@ -846,7 +904,7 @@ entity_types={
 		["update"]=function(entity)
 			if entity.curr_anim=="shooting" and entity.curr_anim_frames==12 then
 				spawn_entity_at_entity("spear",entity)
-			elseif game_frame%120==0 then
+			elseif game_frame%45==0 then
 				set_entity_anim(entity,"shooting")
 			end
 		end,
@@ -1090,16 +1148,16 @@ levels={
 				"         ~~~~=~~~~~~ ",
 				"   .   =======       ",
 				"   #   =()()()       ",
-				" . * . =             ",
-				" # * # =             ",
-				" * ~ ~ =             ",
-				" *     =             ",
-				" *     =             ",
-				"       =             ",
-				"       =             ",
-				"       =             ",
-				"       =             ",
-				"       =             "
+				" . * . ======        ",
+				" # * # ======        ",
+				" * ~ ~ ======        ",
+				" *     ======        ",
+				" *     ======        ",
+				"       ======        ",
+				"       ======        ",
+				"       ======        ",
+				"       ======        ",
+				"       ======        "
 			}
 		}
 	}
@@ -1235,7 +1293,7 @@ b333b330b333bb30b333bb9000000000001c1c1001ccccc101c1c100001c1c1100111c1100000000
 0000000000000000054444500898998000499940094ccc4909499900004999990094999900000000000000000000000000000000044444002545452002323350
 00000000000000000665446008889980009909900999999900990000009900000000000000000000000000000000000000000000004440000222220003533320
 __gff__
-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001010100000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000101010000000000000000000000000008020100000000000000000000000000081a000000000000000000000000000000000000000000000000000000000000
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __map__
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
